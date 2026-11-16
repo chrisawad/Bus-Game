@@ -1,0 +1,11 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+*.log
+.env*
+!.env.example
+.codex-attachments/
+
+# Agent skills are restored locally from skills-lock.json.
+.agents/skills/

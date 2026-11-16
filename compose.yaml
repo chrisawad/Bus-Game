@@ -1,0 +1,7 @@
+services:
+  bus-bloom:
+    build: .
+    image: bus-bloom:local
+    ports:
+      - "${BUS_BLOOM_PORT:-8088}:80"
+    restart: unless-stopped
