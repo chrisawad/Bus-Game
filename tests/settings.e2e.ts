@@ -6,6 +6,10 @@ test('floating settings support keyboard dismissal, saved preferences, and help'
   const trigger = page.getByRole('button', { name: 'Settings', exact: true });
   const panel = page.locator('#settings-panel');
   await expect(panel).toBeHidden(); await expect(page.locator('#install')).toBeVisible();
+  await expect(page.locator('.header-actions #install,.play-column #keyboard-panel')).toHaveCount(0);
+  const installBox = await page.locator('#install').boundingBox(), controls = await page.locator('.control-bar').boundingBox();
+  expect(installBox!.x).toBeLessThan(25); expect(installBox!.y).toBeGreaterThan(page.viewportSize()!.height * .75);
+  expect(installBox!.x + installBox!.width).toBeLessThan(controls!.x);
   await expect(page.locator('.control-bar #sound,.control-bar #speed')).toHaveCount(0);
   await trigger.focus(); await trigger.press('Enter');
   await expect(panel).toBeVisible(); await expect(trigger).toHaveAttribute('aria-expanded', 'true');
@@ -22,6 +26,10 @@ test('floating settings support keyboard dismissal, saved preferences, and help'
   await page.screenshot({ path: 'test-results/' + info.project.name + '-settings.png' });
   await page.keyboard.press('Escape'); await expect(panel).toBeHidden(); await expect(trigger).toBeFocused();
   await trigger.click(); await page.mouse.click(5, 100); await expect(panel).toBeHidden();
+  await trigger.click(); await panel.locator('#keyboard-panel summary').click();
+  await expect(panel.locator('#bus-controls')).toBeVisible();
+  await expect(panel.locator('[data-bus-id]')).toHaveCount(saved.active.buses.length);
+  await panel.locator('#keyboard-panel summary').click(); await page.locator('#settings-close').click();
   await trigger.click(); await page.locator('#help').click();
   await expect(page.locator('#dialog')).toBeVisible(); await expect(panel).toBeHidden();
   await page.locator('#dialog-close').click(); await expect(trigger).toBeFocused();

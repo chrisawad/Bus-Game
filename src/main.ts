@@ -50,7 +50,6 @@ el('#app').innerHTML = `
       <span>Bus <span class="brand-light">Jam</span><span class="brand-period">.</span></span>
     </a>
     <div class="header-actions flex items-center gap-2">
-      <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
       <button class="icon-button settings-trigger" id="settings" type="button" popovertarget="settings-panel" aria-controls="settings-panel" aria-expanded="false" aria-label="Settings">${icon('settings')}</button>
     </div>
   </header>
@@ -84,9 +83,7 @@ el('#app').innerHTML = `
           <button class="hint-button" id="hint" type="button">${icon('hint')} Hint</button>
         </div>
       </div>
-      <details class="keyboard-panel" id="keyboard-panel">
-        <summary aria-label="Bus list and keyboard controls" title="Bus list and keyboard controls">${icon('bus')}<span>Bus list & keyboard controls</span></summary><div class="bus-controls" id="bus-controls"></div>
-      </details>
+      <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
       <div class="play-footer"><span>${icon('check')} <span id="offline-state">Saved on this device</span></span>
         <button type="button" id="update" hidden>Update ready · Reload ↗</button>
       </div>
@@ -98,6 +95,10 @@ el('#app').innerHTML = `
       <button class="setting-row" id="sound" type="button" aria-label="Sound" aria-pressed="false" autofocus><span class="setting-icon">${icon('mute')}</span><span>Sound</span><span class="setting-value" id="sound-value">Off</span></button>
       <button class="setting-row" id="speed" type="button" aria-label="Double speed" aria-pressed="false"><span class="setting-icon">${icon('speed')}</span><span>Double speed</span><span class="setting-value" id="speed-value">1×</span></button>
       <button class="setting-row" id="help" type="button"><span class="setting-icon">${icon('help')}</span><span>How to play</span>${icon('arrow')}</button>
+      <details class="keyboard-panel" id="keyboard-panel">
+        <summary class="setting-row" aria-label="Bus list and keyboard controls"><span class="setting-icon">${icon('bus')}</span><span>Bus list</span>${icon('arrow')}</summary>
+        <div class="bus-controls" id="bus-controls"></div>
+      </details>
     </div>
     <p class="settings-saved" id="save-state">${icon('check')} Progress saved</p>
   </section>

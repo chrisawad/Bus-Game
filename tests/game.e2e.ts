@@ -102,6 +102,7 @@ test('boards people behind another color and refills both sides in a group', asy
 });
 test('accepts quick successive dispatches and keeps all stop reservations unique', async ({ page }, info) => {
   await openDepot(page);
+  await page.locator('#settings').click();
   await page.locator('#keyboard-panel summary').click();
   const ids = (await read(page)).active.buses.slice(-3).reverse().map((b: { id: string }) => b.id);
   // Send a burst through the real button handlers in one browser task. Waiting
@@ -118,7 +119,7 @@ test('accepts quick successive dispatches and keeps all stop reservations unique
   expect(burst.buses.filter((b: { status: string }) => b.status === 'arriving')).toHaveLength(3);
   const reserved = burst.buses.filter((b: { dock: number | null; status: string }) => b.dock !== null && b.status !== 'gone');
   expect(new Set(reserved.map((b: { dock: number }) => b.dock)).size).toBe(reserved.length);
-  await page.locator('#keyboard-panel summary').click();
+  await page.locator('#settings-close').click();
   await page.screenshot({ path: 'test-results/' + info.project.name + '-traffic.png', fullPage: true });
 });
 test('clears the full dense level with concurrent traffic, then advances and restores', async ({ page }, info) => {
@@ -135,7 +136,7 @@ test('clears the full dense level with concurrent traffic, then advances and res
     const trackFrame = (now: number) => { Reflect.set(window, '__busLastFrame', now); requestAnimationFrame(trackFrame); };
     requestAnimationFrame(trackFrame);
   });
-  await openDepot(page); await page.locator('#settings').click(); await page.locator('#speed').click(); await page.locator('#settings-close').click();
+  await openDepot(page); await page.locator('#settings').click(); await page.locator('#speed').click();
   await page.locator('#keyboard-panel summary').click();
   const ids = await page.locator('[data-bus-id]').evaluateAll(nodes => nodes.map(n => (n as HTMLElement).dataset.busId!).reverse());
   for (let i = 0; i < ids.length; i++) {
