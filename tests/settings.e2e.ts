@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test';
 const key = 'bus-jam-v1';
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => sessionStorage.setItem('bus-jam-install-dismissed', '1'));
+});
 
 test('floating settings support keyboard dismissal, saved preferences, and help', async ({ page }, info) => {
   await page.goto('./'); await expect(page.locator('#scene canvas')).toBeVisible();

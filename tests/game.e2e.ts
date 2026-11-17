@@ -5,6 +5,7 @@ test.beforeEach(async ({ page }) => {
   // Repeatable crowds in browser checks; production gets a fresh seed on
   // each new game. Model tests exercise many other shuffle seeds.
   await page.addInitScript(() => {
+    sessionStorage.setItem('bus-jam-install-dismissed', '1');
     let seed = 12345;
     Math.random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 0x100000000);
   });
@@ -123,6 +124,9 @@ test('accepts quick successive dispatches and keeps all stop reservations unique
   await page.screenshot({ path: 'test-results/' + info.project.name + '-traffic.png', fullPage: true });
 });
 test('clears the full dense level with concurrent traffic, then advances and restores', async ({ page }, info) => {
+  // Normal-motion inputs and boarding are checked above. The long complete
+  // playthrough also covers the reduced-motion path and finishes faster in CI.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   // Capture the pure route objects for a useful failure report without adding
   // diagnostic globals to the production game.
   await page.addInitScript(() => {

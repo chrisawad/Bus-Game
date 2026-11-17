@@ -98,6 +98,8 @@ p,li { text-wrap:pretty; }
 .graphics-error p { max-inline-size:20rem;line-height:1.7; }
 dialog { inline-size:min(29rem,calc(100% - 2rem));max-block-size:calc(100dvh - 2rem);margin:auto;border:1px solid #d0ddeb;border-radius:1.4rem;background:#fafbf3;color:#294c3d;padding:2.25rem 1.8rem 1.5rem;box-shadow:0 20px 100px #162f4d30;overflow-y:auto; }
 dialog::backdrop { background:#172e505c;backdrop-filter:blur(5px); }
+dialog:modal { overscroll-behavior:contain; }
+dialog::backdrop { overflow:hidden;overscroll-behavior:contain; }
 .dialog-close { position:absolute;inset-block-start:.4rem;inset-inline-end:.4rem; }
 #dialog-content { text-align:center; }
 .dialog-emblem { display:grid;place-items:center;inline-size:3.5rem;block-size:3.5rem;margin:0 auto 1.2rem;border-radius:1rem;background:#e6efdc;color:#658d58; }

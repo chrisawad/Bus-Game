@@ -6,14 +6,16 @@ type InstallNavigator = Navigator & {
   getInstalledRelatedApps?: () => Promise<RelatedApp[]>;
 };
 
-export function setupInstall(button: HTMLButtonElement, help: () => void, status: (message: string) => void, focusAfterInstall: () => void) {
+export function setupInstall(button: HTMLButtonElement, help: () => void, status: (message: string) => void, focusAfterInstall: () => void, onInstalled?: () => void) {
   const nav = navigator as InstallNavigator;
   const appMode = matchMedia('(display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay)');
   let prompt: InstallPrompt | undefined, installedHere = false, relatedInstalled = false;
+  const isInstalled = () => appMode.matches || nav.standalone === true || installedHere || relatedInstalled;
   const reflect = () => {
-    const installed = appMode.matches || nav.standalone === true || installedHere || relatedInstalled;
+    const installed = isInstalled();
     if (installed && document.activeElement === button) focusAfterInstall();
     button.hidden = installed;
+    if (installed) onInstalled?.();
   };
   const checkRelated = async () => {
     if (!isSecureContext || !nav.getInstalledRelatedApps) return;
@@ -33,7 +35,7 @@ export function setupInstall(button: HTMLButtonElement, help: () => void, status
     // Fresh browser eligibility also covers uninstalling during this session.
     installedHere = false; relatedInstalled = false; reflect();
   });
-  button.addEventListener('click', async () => {
+  const request = async () => {
     if (button.getAttribute('aria-disabled') === 'true') return;
     // The always-visible game action has a real help flow when prompting is
     // unavailable. Call supported install APIs directly in this user gesture.
@@ -50,8 +52,11 @@ export function setupInstall(button: HTMLButtonElement, help: () => void, status
     } catch {
       status('Installation did not complete. Try again or use your browser’s install menu.');
     } finally { button.removeAttribute('aria-disabled'); reflect(); }
-  });
-  reflect(); void checkRelated();
+  };
+  button.addEventListener('click', request);
+  reflect();
+  const ready = checkRelated();
+  return { ready, isInstalled, request };
 }
 
 export function installInstructions() {

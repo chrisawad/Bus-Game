@@ -36,11 +36,14 @@ let game = new Game(saved?.active.level ?? 1, saved?.active, currentYard(), newC
 const progress: Omit<Save, 'active'> = { version: 7, completed: saved?.completed ?? [], best: saved?.best ?? {}, sound: saved?.sound ?? false, fast: saved?.fast ?? false };
 let scene: DepotScene;
 let boardingInProgress = false, boardingClock = 0, lastPhase = '';
-let modal: 'help' | 'retry' | 'won' | 'jammed' | 'install' | null = null;
+let modal: 'help' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | null = null;
 let messageTimer: ReturnType<typeof setTimeout>;
 let audioContext: AudioContext | undefined;
 let audioReady = false;
 let updateAvailable: (() => void) | null = null;
+let updatePrompted = false, installChecked = false, applyingUpdate = false;
+let installPrompted = false;
+try { installPrompted = sessionStorage.getItem('bus-jam-install-dismissed') === '1'; } catch { /* Session-only state is sufficient. */ }
 
 el('#app').innerHTML = `
 <div class="app-shell">
@@ -85,7 +88,6 @@ el('#app').innerHTML = `
       </div>
       <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
       <div class="play-footer"><span>${icon('check')} <span id="offline-state">Saved on this device</span></span>
-        <button type="button" id="update" hidden>Update ready · Reload ↗</button>
       </div>
     </section>
   </main>
@@ -95,6 +97,7 @@ el('#app').innerHTML = `
       <button class="setting-row" id="sound" type="button" aria-label="Sound" aria-pressed="false" autofocus><span class="setting-icon">${icon('mute')}</span><span>Sound</span><span class="setting-value" id="sound-value">Off</span></button>
       <button class="setting-row" id="speed" type="button" aria-label="Double speed" aria-pressed="false"><span class="setting-icon">${icon('speed')}</span><span>Double speed</span><span class="setting-value" id="speed-value">1×</span></button>
       <button class="setting-row" id="help" type="button"><span class="setting-icon">${icon('help')}</span><span>How to play</span>${icon('arrow')}</button>
+      <button class="setting-row" id="update" type="button" hidden><span class="setting-icon">${icon('reset')}</span><span>Update available</span>${icon('arrow')}</button>
       <details class="keyboard-panel" id="keyboard-panel">
         <summary class="setting-row" aria-label="Bus list and keyboard controls"><span class="setting-icon">${icon('bus')}</span><span>Bus list</span>${icon('arrow')}</summary>
         <div class="bus-controls" id="bus-controls"></div>
@@ -124,6 +127,7 @@ function persist() {
   const ok = writeSave({ ...progress, active: game.state });
   el('#save-state').innerHTML = icon(ok ? 'check' : 'help') + (ok ? 'Progress saved' : 'Save unavailable');
   el('#save-state').title = ok ? 'Saved locally on this device' : 'Browser storage is unavailable. You can still play this session.';
+  return ok;
 }
 function say(text: string, warning = false, duration = 4000) {
   clearTimeout(messageTimer); el('#status').textContent = text;
@@ -241,6 +245,16 @@ function showDialog(kind: NonNullable<typeof modal>) {
   } else if (kind === 'install') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('download') + '</div><h2 id="dialog-title">Install Bus Jam</h2>' +
       installInstructions() + '<button class="dialog-primary" data-action="close">Got it ' + icon('check') + '</button>';
+  } else if (kind === 'install-offer') {
+    content.innerHTML = '<div class="dialog-emblem">' + icon('download') + '</div><h2 id="dialog-title">Take Bus Jam with you</h2>' +
+      '<p>Add Bus Jam to your home screen for full-screen puzzles and offline play.</p>' +
+      '<button class="dialog-primary" data-action="install" autofocus>Install Bus Jam ' + icon('download') + '</button>' +
+      '<button class="dialog-secondary" data-action="close">Not now</button>';
+  } else if (kind === 'update') {
+    content.innerHTML = '<div class="dialog-emblem">' + icon('reset') + '</div><h2 id="dialog-title">A new version is ready</h2>' +
+      '<p>Update Bus Jam to get the latest changes. Your progress will be saved before reloading.</p>' +
+      '<button class="dialog-primary" data-action="update" autofocus>Update now ' + icon('reset') + '</button>' +
+      '<button class="dialog-secondary" data-action="close">Later</button>';
   } else {
     content.innerHTML = '<div class="dialog-emblem trophy">' + icon('trophy') + '</div><div class="eyebrow">EVERYONE MADE IT HOME</div><h2 id="dialog-title">Now that’s a good route.</h2>' +
       '<p>Every bus is gone. Every little person is on their way. Take a moment—you’ve earned it.</p>' +
@@ -251,10 +265,19 @@ function showDialog(kind: NonNullable<typeof modal>) {
   content.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.action;
     if (action === 'close') closeDialog(); if (action === 'restart') restart(); if (action === 'next') restart(game.state.level + 1); if (action === 'undo') doUndo();
+    if (action === 'install') { closeDialog(); void installFlow.request(); }
+    if (action === 'update' && !applyingUpdate) {
+      if (!persist()) {
+        content.querySelector('p')!.textContent = 'Your progress could not be saved. Keep playing, or try saving again before updating.';
+        button.textContent = 'Try saving again'; return;
+      }
+      applyingUpdate = true; button.textContent = 'Updating…'; button.setAttribute('aria-disabled', 'true'); updateAvailable?.();
+    }
   }));
   dialog.showModal();
 }
 function closeDialog() { el<HTMLDialogElement>('#dialog').close(); modal = null; }
+el('#dialog').addEventListener('close', () => { if (!el<HTMLDialogElement>('#dialog').open) modal = null; });
 el('#dialog-close').addEventListener('click', closeDialog);
 el<HTMLDialogElement>('#dialog').addEventListener('cancel', event => {
   if (modal === 'jammed' || modal === 'won') event.preventDefault(); else modal = null;
@@ -277,13 +300,32 @@ window.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (key === 'z') { event.preventDefault(); doUndo(); } if (key === 'h') el<HTMLButtonElement>('#hint').click(); if (key === 'r') showDialog('retry');
 });
-setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), message => say(message), () => el('#settings').focus());
+const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), message => say(message), () => el('#settings').focus(), () => {
+  if (modal === 'install-offer' || modal === 'install') closeDialog();
+});
+void installFlow.ready.then(() => { installChecked = true; });
+function showPendingNotice() {
+  if (modal || applyingUpdate || settings.isOpen() || game.state.phase !== 'playing') return;
+  if (updateAvailable && !updatePrompted) { updatePrompted = true; showDialog('update'); return; }
+  if (installChecked && !installPrompted && !installFlow.isInstalled()) {
+    installPrompted = true;
+    try { sessionStorage.setItem('bus-jam-install-dismissed', '1'); } catch { /* Keep the offer once per page if storage is unavailable. */ }
+    showDialog('install-offer');
+  }
+}
 const updateSW = registerSW({
-  onNeedRefresh() { updateAvailable = () => void updateSW(true); el('#update').hidden = false; },
+  immediate: true,
+  onNeedRefresh() { updatePrompted = false; updateAvailable = () => void updateSW(true); el('#update').hidden = false; },
+  onRegisteredSW(_url, registration) {
+    const check = () => { if (registration && navigator.onLine && !document.hidden) void registration.update().catch(() => {}); };
+    window.addEventListener('focus', check); window.addEventListener('online', check);
+    document.addEventListener('visibilitychange', check);
+    setInterval(check, 5 * 60 * 1000);
+  },
   onOfflineReady() { el('#offline-state').textContent = 'Offline ready · Saved on this device'; },
   onRegisterError(error) { console.warn('Offline support could not start.', error); },
 });
-el('#update').addEventListener('click', () => { persist(); updateAvailable?.(); });
+el('#update').addEventListener('click', () => showDialog('update'));
 window.addEventListener('offline', () => { el('#offline-state').textContent = 'Playing offline · Progress saved'; });
 window.addEventListener('online', () => { el('#offline-state').textContent = 'Saved on this device'; });
 window.addEventListener('pagehide', persist);
@@ -299,7 +341,9 @@ try {
   function frame(now: number) {
     const realDt = Math.min((now - previous) / 1000, .5); previous = now;
     if (!document.hidden) {
-      const dt = realDt * (progress.fast ? 2 : 1); scene.update(dt);
+      const dt = realDt * (progress.fast ? 2 : 1);
+      if (!modal || modal === 'won') scene.update(dt);
+      showPendingNotice();
       if (!modal && !boardingInProgress) {
         boardingClock += dt;
         if (boardingClock >= .15) {
