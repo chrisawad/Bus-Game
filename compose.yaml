@@ -1,7 +1,7 @@
 services:
-  bus-bloom:
+  bus-jam:
     build: .
-    image: bus-bloom:local
+    image: bus-jam:local
     ports:
-      - "${BUS_BLOOM_PORT:-8088}:80"
+      - "${BUS_JAM_PORT:-8088}:80"
     restart: unless-stopped

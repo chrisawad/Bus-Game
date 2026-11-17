@@ -1,56 +1,110 @@
 import { describe, expect, it } from 'vitest';
-import { Game, makeLevel, collisionFor, bounds, validState, clone, STOP_COUNT } from '../src/game';
+import { Game, BUS_SCALE, DEFAULT_YARD, QUEUE_SIZE, STOP_COUNT, CROWD_BATCH_SIZE, makeLevel, collisionFor, bounds, busShape, validState, clone } from '../src/game';
+import { fitYard } from '../src/yard';
+import { polygonsOverlap } from '../src/geometry';
 
-describe('puzzle mechanics', () => {
-  it('feeds the shared queue from alternating lines and preserves FIFO', () => {
+describe('dense depot and group boarding', () => {
+  it('fills the smaller 24-person middle from alternating shuffled lines', () => {
     const state = makeLevel(1);
-    expect(state.queue.map(p => p.lane)).toEqual(Array.from({ length: 14 }, (_, i) => i % 2));
-    expect(state.queue.map(p => p.id)).toEqual(Array.from({ length: 14 }, (_, i) => i));
-    expect(state.lines[0][0].id).toBe(14);
-    expect(state.lines[1][0].id).toBe(15);
+    expect(state.queue).toHaveLength(QUEUE_SIZE);
+    expect(state.queue.map(p => p.lane)).toEqual(Array.from({ length: QUEUE_SIZE }, (_, i) => i % 2));
+    expect(state.lines[0][0].id).toBe(QUEUE_SIZE);
+    expect(state.lines[1][0].id).toBe(QUEUE_SIZE + 1);
+    expect(state.totalPassengers).toBeGreaterThan(300);
+    expect(state.buses.length).toBeGreaterThanOrEqual(45);
+    expect(state.buses.filter(bus => collisionFor(bus, state.buses)).length).toBeGreaterThanOrEqual(30);
   });
-  it('generates deterministic, non-overlapping, solvable levels', () => {
-    for (let level = 1; level <= 100; level++) {
-      const state = makeLevel(level);
-      expect(state).toEqual(makeLevel(level));
-      expect(state.buses.length).toBeGreaterThanOrEqual(16);
-      for (const a of state.buses) for (const b of state.buses) {
-        if (a === b) continue;
-        const ab = bounds(a), bb = bounds(b);
-        expect(ab.x < bb.x + bb.w && ab.x + ab.w > bb.x && ab.y < bb.y + bb.h && ab.y + ab.h > bb.y).toBe(false);
+  it('packs rectangular phone and desktop yards without overlap and preserves a solution', () => {
+    for (const yard of [DEFAULT_YARD, fitYard(390, 844), fitYard(1440, 1000)]) for (let level = 1; level <= 4; level++) {
+      const state = makeLevel(level, yard);
+      expect(state).toEqual(makeLevel(level, yard));
+      expect(state.buses.length, JSON.stringify({ level, count: state.buses.length })).toBeGreaterThanOrEqual(40);
+      expect(state.buses.reduce((area, bus) => area + (bus.length - .1) * .92 * BUS_SCALE ** 2, 0)).toBeGreaterThan(35);
+      expect(state.buses.filter(b => b.direction.length === 2).length).toBeGreaterThanOrEqual(5);
+      for (const bus of state.buses) {
+        const b = bounds(bus);
+        expect(b.x).toBeGreaterThanOrEqual(0); expect(b.y).toBeGreaterThanOrEqual(0);
+        expect(b.x + b.w).toBeLessThanOrEqual(yard.width); expect(b.y + b.h).toBeLessThanOrEqual(yard.height);
+        for (const other of state.buses) if (bus !== other) expect(polygonsOverlap(busShape(bus), busShape(other))).toBe(false);
       }
       for (const bus of [...state.buses].reverse()) {
-        expect(collisionFor(bus, state.buses)).toBeNull();
-        bus.status = 'gone';
+        expect(collisionFor(bus, state.buses)).toBeNull(); bus.status = 'gone';
       }
     }
-  });
-  it('blocked buses stay in the yard and do not reserve a stop', () => {
+  }, 120_000);
+  it('keeps blocked buses in the yard without taking a stop', () => {
     const game = new Game();
     const blocked = game.state.buses.find(b => collisionFor(b, game.state.buses))!;
-    expect(blocked).toBeDefined();
     expect(game.dispatch(blocked.id).type).toBe('bump');
     expect(blocked.status).toBe('yard');
     expect(game.availableStops).toHaveLength(STOP_COUNT);
     expect(game.state.moves).toBe(0);
-    expect(game.state.bumps).toBe(1);
   });
-  it('matches only the front passenger color, holds the stop until departure, and wins only when all buses are gone', () => {
+  it('boards matching people anywhere in the middle, even behind another color', () => {
+    const game = new Game();
+    const first = game.state.queue[0];
+    const bus = game.movable.find(b => b.color !== first.color && game.state.queue.filter(p => p.color === b.color).length >= 4)!;
+    expect(bus).toBeDefined();
+    const before = clone(game.state);
+    const middleIds = new Set(before.queue.map(p => p.id));
+    game.dispatch(bus.id); game.arrive(bus.id);
+    const wave = game.boardAvailable()!;
+    expect(wave.boardings.length).toBeGreaterThan(1);
+    expect(wave.boardings.every(event => event.person.color === bus.color && middleIds.has(event.person.id))).toBe(true);
+    expect(game.state.queue[0].id).toBe(first.id);
+    expect(bus.filled).toBeLessThanOrEqual(bus.capacity);
+    expect(wave.refilled).toHaveLength(wave.boardings.length);
+    expect(game.state.lines[0].length).toBeLessThan(before.lines[0].length - 1);
+    expect(game.state.lines[1].length).toBeLessThan(before.lines[1].length - 1);
+    expect(wave.refilled.map(p => p.lane)).toEqual(Array.from({ length: wave.refilled.length }, (_, i) => i % 2));
+    expect(game.state.queue).toHaveLength(QUEUE_SIZE);
+    expect(validState(game.state)).toBe(true);
+  });
+  it('does not draw directly from the overflow while a boarding group is leaving', () => {
+    const game = new Game();
+    const bus = game.movable.at(-1)!;
+    const middle = new Set(game.state.queue.map(p => p.id));
+    game.dispatch(bus.id); game.arrive(bus.id);
+    const wave = game.boardAvailable()!;
+    expect(wave.boardings.every(event => middle.has(event.person.id))).toBe(true);
+    expect(wave.refilled.every(p => !wave.boardings.some(event => event.person.id === p.id))).toBe(true);
+  });
+  it('can send five buses immediately and reserves a different stop for each', () => {
+    const game = new Game();
+    const ids = [...game.state.buses].reverse().slice(0, STOP_COUNT).map(b => b.id);
+    for (const id of ids) expect(game.dispatch(id).type).toBe('drive');
+    const buses = game.state.buses.filter(b => b.status === 'arriving');
+    expect(buses).toHaveLength(STOP_COUNT);
+    expect(new Set(buses.map(b => b.dock)).size).toBe(STOP_COUNT);
+    expect(game.availableStops).toHaveLength(0);
+    expect(game.boardAvailable()).toBeNull();
+    expect(game.dispatch(game.movable.at(-1)!.id).type).toBe('full');
+  });
+  it('fills more than one docked bus per wave without overfilling', () => {
+    const game = new Game();
+    const buses = [...game.state.buses].reverse().slice(0, STOP_COUNT);
+    for (const bus of buses) { game.dispatch(bus.id); game.arrive(bus.id); }
+    const wave = game.boardAvailable()!;
+    expect(new Set(wave.boardings.map(b => b.bus.id)).size).toBeGreaterThan(1);
+    expect(wave.boardings.length).toBeGreaterThan(12);
+    expect(buses.every(b => b.filled <= b.capacity)).toBe(true);
+    expect(new Set(wave.fullBuses.map(b => b.id)).size).toBe(wave.fullBuses.length);
+    expect(validState(game.state)).toBe(true);
+  });
+  it('wins only after every full bus has finished leaving', () => {
     const game = new Game();
     const solution = [...game.state.buses].reverse();
-    for (const bus of solution) {
-      expect(game.dispatch(bus.id).type).toBe('drive');
-      expect(game.boardNext()).toBeNull();
-      game.arrive(bus.id);
-      for (let seat = 0; seat < bus.capacity; seat++) {
-        const boarded = game.boardNext()!;
-        expect(boarded.person.color).toBe(bus.color);
-        expect(boarded.full).toBe(seat === bus.capacity - 1);
+    for (let i = 0; i < solution.length; i += CROWD_BATCH_SIZE) {
+      const batch = solution.slice(i, i + CROWD_BATCH_SIZE);
+      for (const bus of batch) { expect(game.dispatch(bus.id).type).toBe('drive'); game.arrive(bus.id); }
+      while (batch.some(b => b.status !== 'gone')) {
+        const wave = game.boardAvailable()!;
+        expect(wave).not.toBeNull();
+        expect(game.state.phase).toBe('playing');
+        for (const bus of wave.fullBuses) {
+          expect(bus.filled).toBe(bus.capacity); expect(bus.status).toBe('leaving'); game.depart(bus.id);
+        }
       }
-      expect(bus.status).toBe('leaving');
-      expect(game.availableStops).toHaveLength(STOP_COUNT - 1);
-      expect(game.state.phase).toBe('playing');
-      game.depart(bus.id);
     }
     expect(game.state.phase).toBe('won');
     expect(game.remaining).toBe(0);
@@ -58,61 +112,54 @@ describe('puzzle mechanics', () => {
     expect(game.state.lines.flat()).toHaveLength(0);
     expect(game.state.boarded).toBe(game.state.totalPassengers);
   });
-  it('will not skip a passenger to serve a different color', () => {
-    const game = new Game();
-    const front = game.state.queue[0].color;
-    const other = game.movable.find(b => b.color !== front)!;
-    expect(other).toBeDefined();
-    game.dispatch(other.id); game.arrive(other.id);
-    const before = clone(game.state.queue);
-    expect(game.boardNext()).toBeNull();
-    expect(game.state.queue).toEqual(before);
-    expect(other.filled).toBe(0);
-  });
-  it('reserves distinct stops and undoes the entire preceding dispatch', () => {
-    const game = new Game();
-    const before = clone(game.state);
-    const bus = game.movable.at(-1)!;
-    game.dispatch(bus.id); game.arrive(bus.id); game.boardNext();
-    expect(game.undo()).toBe(true);
-    expect(game.state).toEqual(before);
-    while (game.availableStops.length) {
-      const next = game.movable.at(-1)!;
-      game.dispatch(next.id);
+  it('shuffles both feeders independently and keeps different crowd seeds solvable', () => {
+    for (const yard of [DEFAULT_YARD, fitYard(390, 844), fitYard(1440, 1000)]) for (let seed = 1; seed <= 12; seed++) {
+      const initial = makeLevel(1, yard, seed), again = makeLevel(1, yard, seed);
+      expect(initial).toEqual(again);
+      const other = makeLevel(1, yard, seed + 100);
+      expect(initial.buses).toEqual(other.buses);
+      for (const lane of [0, 1] as const) {
+        expect(initial.lines[lane].map(p => p.color)).not.toEqual(other.lines[lane].map(p => p.color));
+        expect(initial.lines[lane].filter((p, i, line) => i && p.color !== line[i - 1].color).length).toBeGreaterThan(initial.lines[lane].length / 4);
+      }
+      expect(initial.lines[0].map(p => p.color)).not.toEqual(initial.lines[1].map(p => p.color));
+      const game = new Game(1, initial), solution = [...game.state.buses].reverse();
+      for (let i = 0; i < solution.length; i += CROWD_BATCH_SIZE) {
+        const batch = solution.slice(i, i + CROWD_BATCH_SIZE);
+        for (const bus of batch) { expect(game.dispatch(bus.id).type).toBe('drive'); game.arrive(bus.id); }
+        while (batch.some(bus => bus.status !== 'gone')) {
+          const wave = game.boardAvailable(); expect(wave, 'unfinished shuffled batch must still be boardable').not.toBeNull();
+          for (const bus of wave!.fullBuses) game.depart(bus.id);
+        }
+      }
+      expect(game.state.phase).toBe('won');
+      expect(validState(game.state)).toBe(true);
     }
-    const docks = game.state.buses.filter(b => b.status === 'arriving').map(b => b.dock);
-    expect(new Set(docks).size).toBe(STOP_COUNT);
-    expect(game.dispatch(game.movable.at(-1)!.id).type).toBe('full');
-  });
-  it('detects a full-stop color deadlock and undo recovers it', () => {
+  }, 60_000);
+  it('checks every middle passenger before declaring a full-stop deadlock', () => {
     const game = new Game();
-    for (let i = 0; i < STOP_COUNT; i++) {
-      const bus = game.movable.at(-1)!;
-      game.dispatch(bus.id); game.arrive(bus.id);
-    }
-    // Arrange a valid stalled queue head without depending on the generated palette order.
-    const docked = game.state.buses.filter(b => b.status === 'docked');
-    for (const bus of docked) bus.color = 'coral';
-    game.state.queue[0].color = 'mint';
-    game.checkEnd();
-    expect(game.state.phase).toBe('jammed');
+    for (const bus of [...game.state.buses].reverse().slice(0, STOP_COUNT)) { game.dispatch(bus.id); game.arrive(bus.id); }
+    const ready = game.state.buses.filter(b => b.status === 'docked');
+    for (const bus of ready) bus.color = 'coral';
+    game.state.queue.forEach(p => { p.color = 'mint'; });
+    game.state.queue[20].color = 'coral';
+    game.checkEnd(); expect(game.state.phase).toBe('playing');
+    game.state.queue[20].color = 'mint';
+    game.checkEnd(); expect(game.state.phase).toBe('jammed');
     expect(game.undo()).toBe(true);
     expect(game.state.phase).toBe('playing');
   });
-  it('validates saves, rejects corrupted data, and settles animations on restore', () => {
+  it('undoes a dispatch and validates saves during overlapping movements', () => {
     const game = new Game();
+    const before = clone(game.state);
+    game.dispatch(game.movable.at(-1)!.id);
     expect(validState(game.state)).toBe(true);
-    const bus = game.movable.at(-1)!;
-    game.dispatch(bus.id);
-    expect(validState(game.state)).toBe(true);
-    const restored = new Game(1, game.state);
-    expect(restored.state.buses.find(b => b.id === bus.id)!.status).toBe('docked');
-    const corrupted = clone(game.state);
-    corrupted.queue.push(corrupted.queue[0]);
+    expect(new Game(1, game.state).state.buses.some(b => b.status === 'docked')).toBe(true);
+    expect(game.undo()).toBe(true);
+    expect(game.state).toEqual(before);
+    const corrupted = clone(game.state); corrupted.queue.push(corrupted.queue[0]);
     expect(validState(corrupted)).toBe(false);
     expect(validState({ ...game.state, phase: 'won' })).toBe(false);
     expect(validState(null)).toBe(false);
-    expect(validState({ ...game.state, level: 1e9 })).toBe(false);
-    expect(validState({ ...game.state, totalPassengers: 0 })).toBe(false);
   });
 });

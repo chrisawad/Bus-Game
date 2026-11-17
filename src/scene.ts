@@ -1,16 +1,14 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { PALETTE, VECTOR, bounds, type Bus, type GameState, type Person } from './game';
-
-const DOCK_X = [-4.4, -2.2, 0, 2.2, 4.4];
-const DOCK_Z = -4.25;
-const ANGLE = { N: 0, E: -Math.PI / 2, S: Math.PI, W: Math.PI / 2 };
+import { BUS_SCALE, VISIBLE_PER_LINE, PALETTE, VECTOR, directionAngle, type Bus, type BusColor, type GameState, type Person } from './game';
+import { Traffic, createDepotLayout, DOCK_X, BAY_WIDTH, BAY_LENGTH, YARD_TOP, arrivalRoute, departureRoutes, yardPosition, type DepotLayout, type Point } from './traffic';
 const v = (x: number, z: number, y = 0) => new THREE.Vector3(x, y, z);
+const PERSON_SCALE = 1.75;
 const ease = (t: number) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 const materialCache = new Map<string, THREE.MeshStandardMaterial>();
 function material(color: string) {
-  if (!materialCache.has(color)) materialCache.set(color, new THREE.MeshStandardMaterial({ color, roughness: .66 }));
+  if (!materialCache.has(color)) materialCache.set(color, new THREE.MeshStandardMaterial({ color, roughness: .57, metalness: .015 }));
   return materialCache.get(color)!;
 }
 const geometryCache = new Map<string, THREE.BufferGeometry>();
@@ -86,14 +84,14 @@ function rail(parent: THREE.Object3D, points: THREE.Vector3[], color = '#fbf9ef'
 function createBus(bus: Bus) {
   const group = new THREE.Group();
   const color = PALETTE[bus.color], length = bus.length - .18;
-  box(group, .79, .5, length, color.hex, 0, .43, 0, .13);
-  box(group, .73, .13, length - .08, color.light, 0, .735, 0, .065);
+  box(group, .79, .5, length, bus.color === 'yellow' ? '#f4c207' : color.hex, 0, .43, 0, .13);
+  box(group, .73, .13, length - .08, bus.color === 'yellow' ? '#efc41a' : color.light, 0, .735, 0, .065);
   box(group, .63, .27, .025, '#284e5b', 0, .54, -length / 2 - .004, .035);
   box(group, .62, .2, .025, '#284e5b', 0, .54, length / 2 + .004, .025);
   box(group, .62, .065, .04, '#f7f3df', 0, .26, -length / 2, .02);
   for (const x of [-.25, .25]) box(group, .14, .075, .03, '#fff6cb', x, .36, -length / 2 - .02, .025);
   for (const x of [-.26, .26]) box(group, .1, .07, .03, '#e9544f', x, .32, length / 2 + .02, .02);
-  const windowCount = bus.length === 3 ? 5 : 3;
+  const windowCount = bus.length >= 2.8 ? 5 : bus.length >= 1.8 ? 3 : 2;
   for (let i = 0; i < windowCount; i++) {
     const z = -length / 2 + .35 + i * (length - .7) / (windowCount - 1);
     for (const x of [-.398, .398]) {
@@ -116,13 +114,23 @@ function createBus(bus: Bus) {
   arrowShape.lineTo(.065, .08); arrowShape.lineTo(.2, .08);
   arrowShape.lineTo(0, .34); arrowShape.lineTo(-.2, .08);
   arrowShape.lineTo(-.065, .08); arrowShape.closePath();
-  const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape), material('#fffdf2'));
+  // Direction must remain legible even on the shaded side of a golden roof.
+  const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape),
+    new THREE.MeshBasicMaterial({ color: '#fffdf2', toneMapped: false }));
   arrow.rotation.x = -Math.PI / 2; arrow.position.set(0, .808, -.1); group.add(arrow);
+  if (bus.length < 2) arrow.scale.setScalar(.8);
+  if (bus.color === 'yellow' || bus.color === 'pink') {
+    const outline = new THREE.Mesh(arrow.geometry.clone(),
+      new THREE.MeshBasicMaterial({ color: '#634608', toneMapped: false }));
+    outline.rotation.copy(arrow.rotation); outline.position.copy(arrow.position); outline.position.y -= .002;
+    outline.scale.copy(arrow.scale).multiplyScalar(1.2); group.add(outline);
+  }
   // Shape marks provide a second cue alongside bus color.
-  groundLabel(group, color.symbol, 0, length / 2 - .32, .32, '#fffdf2').position.y = .81;
+  groundLabel(group, color.symbol, 0, length / 2 - .32, bus.length < 2 ? .25 : .32, '#fffdf2').position.y = .81;
   mergeStaticMeshes(group);
+  group.scale.setScalar(BUS_SCALE);
   group.traverse(child => { child.userData.busId = bus.id; });
-  group.userData.length = length;
+  group.userData.length = length * BUS_SCALE;
   return group;
 }
 const personGeometry = mergeGeometries([
@@ -134,7 +142,7 @@ const personGeometry = mergeGeometries([
   new THREE.CapsuleGeometry(.03, .12, 2, 6).rotateZ(-.2).translate(.105, .24, 0),
 ])!;
 type BusVisual = { group: THREE.Group; halo: THREE.Mesh; tag: HTMLDivElement };
-type PersonVisual = { mesh: THREE.Mesh; target: THREE.Vector3; boarding: boolean; phase: number };
+type PersonVisual = { mesh: THREE.Object3D; color: BusColor; target: THREE.Vector3; boarding: boolean; phase: number };
 type Motion = { elapsed: number; duration: number; update: (t: number) => void; done?: () => void };
 type Particle = { mesh: THREE.Mesh; velocity: THREE.Vector3; life: number; max: number };
 export class DepotScene {
@@ -144,6 +152,11 @@ export class DepotScene {
   world = new THREE.Group();
   buses = new Map<string, BusVisual>();
   people = new Map<number, PersonVisual>();
+  peopleInstances = new Map<BusColor, THREE.InstancedMesh>();
+  layout: DepotLayout;
+  traffic: Traffic;
+  trips = new Map<string, { group: THREE.Group; end: Point; done: () => void }>();
+  bumping = new Set<string>();
   motions: Motion[] = [];
   particles: Particle[] = [];
   mount: HTMLElement;
@@ -162,13 +175,14 @@ export class DepotScene {
   disposed = false;
   constructor(mount: HTMLElement, state: GameState, onSelect: (id: string) => void) {
     this.mount = mount; this.state = state; this.onSelect = onSelect;
+    this.layout = createDepotLayout(state.yard); this.traffic = new Traffic(this.layout);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = .95;
     this.renderer.setClearColor('#eaf2eb', 0);
     this.renderer.domElement.setAttribute('aria-label', '3D bus depot. Select a bus to drive it in the direction of its arrow. Keyboard controls are available below the board.');
     this.renderer.domElement.setAttribute('role', 'img');
@@ -176,14 +190,20 @@ export class DepotScene {
     this.overlays = document.createElement('div'); this.overlays.className = 'scene-overlays';
     this.overlays.setAttribute('aria-hidden', 'true'); mount.appendChild(this.overlays);
     this.scene.add(this.world);
-    this.camera.position.set(9, 25, 28); this.camera.lookAt(0, 0, -.65);
+    this.camera.position.set(0, 30, this.layout.CAMERA_TARGET_Z + 24.2); this.camera.lookAt(0, 0, this.layout.CAMERA_TARGET_Z);
     this.scene.add(new THREE.HemisphereLight('#fff9e8', '#9cbdb0', 1.6));
-    const sun = new THREE.DirectionalLight('#fff8e6', 2.0);
+    const sun = new THREE.DirectionalLight('#fff8e6', 2);
     sun.position.set(-8, 18, 9); sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 16, bottom: -16, near: .5, far: 60 });
+    Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 19, bottom: -19, near: .5, far: 70 });
     sun.shadow.normalBias = .025; sun.shadow.bias = -.0001;
     this.scene.add(sun);
+    for (const color of Object.keys(PALETTE) as BusColor[]) {
+      const people = new THREE.InstancedMesh(personGeometry, material(PALETTE[color].hex), 512);
+      people.count = 0; people.castShadow = true; people.frustumCulled = false;
+      people.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.peopleInstances.set(color, people); this.scene.add(people);
+    }
     this.buildEnvironment(); mergeStaticMeshes(this.world); this.reset(state);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(mount); this.resize();
@@ -197,59 +217,51 @@ export class DepotScene {
   }
   buildEnvironment() {
     const world = this.world;
-    box(world, 14.25, .38, 20.2, '#d9e8d9', 0, -.28, -.75, .6);
-    box(world, 13.5, .1, 19.4, '#e4ecdf', 0, -.07, -.75, .55);
-    // A continuous perimeter road surrounds the central parking puzzle.
-    box(world, 12.5, .08, 11.7, '#aabbb7', 0, -.005, 2.75, .6);
-    box(world, 8.5, .09, 8.5, '#c3cfc7', 0, .025, 2.8, .17);
-    for (let i = 0; i <= 8; i++) {
-      box(world, .018, .006, 8.1, '#b5c5ba', -4 + i, .076, 2.8, .002);
-      box(world, 8.1, .006, .018, '#b5c5ba', 0, .076, -1.2 + i, .002);
+    const worldDepth = this.layout.WORLD_SOUTH_Z - this.layout.WORLD_NORTH_Z;
+    box(world, this.layout.ROAD_WIDTH + .6, .38, worldDepth, '#d9e8d9', 0, -.28, this.layout.WORLD_CENTER_Z, .6);
+    box(world, this.layout.ROAD_WIDTH + .2, .1, worldDepth - .5, '#e4ecdf', 0, -.07, this.layout.WORLD_CENTER_Z, .55);
+    box(world, this.layout.ROAD_WIDTH, .08, this.layout.ROAD_SOUTH_Z - this.layout.ROAD_NORTH_Z, '#aabbb7', 0, -.005, (this.layout.ROAD_NORTH_Z + this.layout.ROAD_SOUTH_Z) / 2, .6);
+    box(world, this.state.yard.width + .25, .09, this.state.yard.height + .25, '#cbd7cd', 0, .025, YARD_TOP + this.state.yard.height / 2, .36);
+    for (const x of [-this.layout.ROAD_X, this.layout.ROAD_X]) for (let z = this.layout.ROAD_TOP + .55; z < this.layout.ROAD_BOTTOM; z += 1.1)
+      box(world, .045, .012, .43, '#f6f5e5', x, .05, z, .012);
+    for (let x = -this.layout.ROAD_X + .55; x < this.layout.ROAD_X; x += 1.1) {
+      box(world, .43, .012, .045, '#f6f5e5', x, .05, this.layout.ROAD_BOTTOM, .012);
+      box(world, .43, .012, .045, '#f6f5e5', x, .05, this.layout.ROAD_TOP, .012);
     }
-    for (const x of [-5.25, 5.25]) for (let z = -1.9; z < 8.2; z += 1.15)
-      box(world, .045, .012, .47, '#edf1d8', x, .05, z, .012);
-    for (let x = -4.6; x < 5.2; x += 1.15)
-      box(world, .47, .012, .045, '#edf1d8', x, .05, 7.85, .012);
-    groundLabel(world, 'KEEP IT FLOWING  →', 0, 8, 3.5, '#f8f9eb');
-    // Five fully open, numbered stops.
-    box(world, 12.5, .08, 3.2, '#d1dcd1', 0, .015, DOCK_Z, .22);
+    box(world, this.layout.ROAD_WIDTH, .08, BAY_LENGTH + .1, '#d1dcd1', 0, .015, this.layout.DOCK_Z, .22);
     DOCK_X.forEach((x, i) => {
-      box(world, 1.62, .035, 2.92, '#f1f3df', x, .07, DOCK_Z, .2);
-      box(world, 1.52, .04, 2.82, '#bed0c0', x, .075, DOCK_Z, .17);
-      box(world, 1.42, .045, 2.72, '#d7e3d3', x, .08, DOCK_Z, .16);
-      groundLabel(world, String(i + 1).padStart(2, '0'), x, DOCK_Z + .74, .6, '#6e9078');
-      // Small bus-stop poles, with a painted sign.
-      box(world, .055, .8, .055, '#74948b', x + .85, .4, DOCK_Z - .8, .015);
-      box(world, .34, .3, .07, '#426e5b', x + .85, .84, DOCK_Z - .8, .045);
-      box(world, .2, .09, .075, '#fff8df', x + .85, .86, DOCK_Z - .8, .018);
+      box(world, BAY_WIDTH, .035, BAY_LENGTH, '#f4f4df', x, .07, this.layout.DOCK_Z, .16);
+      box(world, BAY_WIDTH - .08, .04, BAY_LENGTH - .1, '#bed0c0', x, .075, this.layout.DOCK_Z, .14);
+      box(world, BAY_WIDTH - .16, .045, BAY_LENGTH - .2, '#d7e3d3', x, .08, this.layout.DOCK_Z, .12);
+      groundLabel(world, String(i + 1).padStart(2, '0'), x, this.layout.DOCK_Z + .7, .45, '#6e9078');
+      box(world, .055, .8, .055, '#74948b', x + .72, .4, this.layout.DOCK_Z - .75, .015);
+      box(world, .34, .3, .07, '#426e5b', x + .72, .84, this.layout.DOCK_Z - .75, .045);
+      box(world, .2, .09, .075, '#fff8df', x + .72, .86, this.layout.DOCK_Z - .75, .018);
     });
-    // The passenger plaza: two feeder lines and a single shared queue.
-    box(world, 12.5, .11, 4.5, '#f3edda', 0, .015, -8, .45);
-    box(world, 7.9, .014, 1.25, '#e8e1c9', 0, .085, -6.75, .3);
-    groundLabel(world, 'LINE A', -4.35, -9.7, 1.4, '#889772');
-    groundLabel(world, 'LINE B', 4.35, -9.7, 1.4, '#889772');
-    groundLabel(world, 'BOARDING →', .2, -5.9, 1.8, '#91a17f');
+    const plaza = new THREE.Group(); plaza.position.z = this.layout.PLAZA_FRONT_Z; world.add(plaza);
+    box(plaza, Math.min(this.layout.ROAD_WIDTH, 14.4), .11, 4.3, '#f3edda', 0, .015, -2.15, .45);
+    box(plaza, 4.9, .014, 1.25, '#e8e1c9', 0, .085, -.95, .3);
     for (const side of [-1, 1]) {
-      rail(world, [v(side * 5.7, -9.45, .24), v(side * 5.65, -7.8, .24), v(side * 4.65, -7.15, .24), v(side * 3.45, -7.1, .24)]);
-      rail(world, [v(side * 3.05, -9.45, .24), v(side * 3.05, -8, .24), v(side * 2.55, -7.2, .24)]);
-      for (const x of [side * 5.65, side * 3.05]) for (const z of [-9.4, -8.3, -7.5])
-        box(world, .055, .23, .055, '#b1bdaa', x, .14, z, .015);
+      rail(plaza, [v(side * 6.25, -3.9, .25), v(side * 6.15, -2.4, .25), v(side * 5.7, -1.65, .25), v(side * 3.5, -1.1, .25)]);
+      rail(plaza, [v(side * 3.25, -3.9, .25), v(side * 3.25, -2.4, .25), v(side * 3.3, -1.75, .25)]);
+      for (const x of [side * 6.2, side * 3.25]) for (const z of [-3.7, -2.8])
+        box(plaza, .055, .23, .055, '#b1bdaa', x, .14, z, .015);
     }
-    rail(world, [v(-3.55, -6.95, .23), v(-3.65, -6.4, .23), v(-2.9, -6.15, .23), v(2.45, -6.15, .23)]);
-    // Pocket gardens and a little shelter make the depot feel like a place.
-    for (const x of [-6.35, 6.35]) for (const z of [-5.4, -.9, 3.3, 7.5]) this.planter(x, z);
-    for (const x of [-6.05, 6.05]) this.lamp(x, -2.7);
-    for (const x of [-1.1, 1.1]) {
-      box(world, .07, 1.4, .07, '#87a28d', x, .7, -9.65, .02);
-      box(world, 2.8, .13, .85, '#82a797', 0, 1.44, -9.65, .15);
-      box(world, 1.9, .07, .36, '#b59879', 0, .41, -9.55, .04);
+    rail(plaza, [v(-2.4, -1.5, .23), v(-2.5, -.6, .23), v(-2.1, -.2, .23), v(2.2, -.2, .23)]);
+    rail(plaza, [v(2.4, -1.5, .23), v(2.5, -.6, .23), v(2.2, -.2, .23)]);
+    for (const x of [-5.5, 5.5]) {
+      box(world, 1.6, .025, 2.3, '#d9e8d9', x, .07, this.layout.DOCK_Z, .25);
+      for (const offset of [-.55, .55]) this.planter(x, this.layout.DOCK_Z + offset);
     }
-    groundLabel(world, 'BUS BLOOM', 0, -9.1, 2, '#7b987f');
+    for (const x of [-6.55, 6.55]) this.lamp(x, this.layout.DOCK_Z);
+    for (const x of [-1.1, 1.1]) box(plaza, .07, 1.35, .07, '#87a28d', x, .7, -3.7, .02);
+    box(plaza, 2.85, .13, .85, '#82a797', 0, 1.44, -3.7, .15);
+    box(plaza, 1.9, .07, .36, '#b59879', 0, .41, -3.6, .04);
   }
   planter(x: number, z: number) {
-    box(this.world, .72, .27, 1.1, '#becbb4', x, .11, z, .16);
-    box(this.world, .6, .22, .95, '#92b47c', x, .3, z, .16);
-    const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(.36, 1), material('#9fbd83'));
+    box(this.world, .65, .25, .9, '#becbb4', x, .11, z, .16);
+    box(this.world, .54, .22, .78, '#92b47c', x, .3, z, .16);
+    const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(.35, 1), material('#9fbd83'));
     leaf.scale.set(.8, 1.15, 1.3); leaf.position.set(x, .54, z); leaf.castShadow = true; this.world.add(leaf);
     for (let i = 0; i < 3; i++) {
       const flower = new THREE.Mesh(new THREE.SphereGeometry(.055, 7, 5), material(i % 2 ? '#f8cf80' : '#f0a49a'));
@@ -263,7 +275,14 @@ export class DepotScene {
     box(this.world, .25, .08, .2, '#fff5ce', x + .39, 1.55, z, .025);
   }
   reset(state: GameState) {
+    const changed = state.yard.width !== this.layout.yard.width || state.yard.height !== this.layout.yard.height;
+    if (changed) {
+      releaseBus(this.world); this.world.clear();
+      this.layout = createDepotLayout(state.yard); this.traffic = new Traffic(this.layout);
+    }
     this.state = state; this.motions = []; this.hinted = null; this.hovered = null;
+    if (changed) { this.buildEnvironment(); mergeStaticMeshes(this.world); }
+    this.traffic.clear(); this.trips.clear(); this.bumping.clear();
     for (const visual of this.buses.values()) {
       this.scene.remove(visual.group, visual.halo); releaseBus(visual.group); (visual.halo.material as THREE.Material).dispose(); visual.tag.remove();
     }
@@ -273,37 +292,42 @@ export class DepotScene {
     for (const bus of state.buses) {
       const group = createBus(bus);
       if (bus.status === 'yard') {
-        const b = bounds(bus); group.position.copy(v(b.x + b.w / 2 - 4, b.y + b.h / 2 - 1.2, .08));
-        group.rotation.y = ANGLE[bus.direction];
+        const p = yardPosition(bus, this.layout); group.position.copy(v(p.x, p.z, .08));
+        group.rotation.y = directionAngle(bus.direction);
       } else {
-        group.position.copy(v(DOCK_X[bus.dock ?? 0], DOCK_Z, .08));
+        group.position.copy(v(DOCK_X[bus.dock ?? 0], this.layout.DOCK_Z, .08));
       }
       group.visible = bus.status !== 'gone';
       this.scene.add(group);
       const halo = new THREE.Mesh(rounded(.96, .035, bus.length + .03, .12),
         new THREE.MeshBasicMaterial({ color: '#fff9c7', transparent: true, opacity: .85 }));
       halo.position.copy(group.position); halo.position.y = .1; halo.rotation.y = group.rotation.y;
+      halo.scale.set(BUS_SCALE, 1, BUS_SCALE);
       halo.visible = false; this.scene.add(halo);
       const tag = document.createElement('div'); tag.className = 'bus-tag'; tag.hidden = true;
       this.overlays.appendChild(tag);
       this.buses.set(bus.id, { group, halo, tag });
     }
     this.syncPeople(true);
+    this.resize();
   }
   resize() {
     const width = this.mount.clientWidth, height = this.mount.clientHeight;
     if (!width || !height) return;
     this.renderer.setSize(width, height);
     const aspect = width / height;
-    const portrait = width < 600;
-    this.camera.position.set(portrait ? 0 : 9, portrait ? 30 : 25, portrait ? 20 : 28);
-    this.camera.lookAt(0, 0, -.65);
+    this.camera.position.set(0, 30, this.layout.CAMERA_TARGET_Z + 24.2);
+    this.camera.lookAt(0, 0, this.layout.CAMERA_TARGET_Z);
     this.camera.updateMatrixWorld();
     // Fit the full plaza and road in both orientations without stretching the scene.
-    const corners = [-7.15, 7.15].flatMap(x => [-10.3, 9].map(z => v(x, z, .5).applyMatrix4(this.camera.matrixWorldInverse)));
+    const halfWidth = Math.max(6.9, this.layout.ROAD_X + .65);
+    const corners = [-halfWidth, halfWidth].flatMap(x => [this.layout.WORLD_NORTH_Z, this.layout.WORLD_SOUTH_Z].map(z => v(x, z, .5).applyMatrix4(this.camera.matrixWorldInverse)));
     const viewW = Math.max(...corners.map(p => p.x)) - Math.min(...corners.map(p => p.x));
     const viewH = Math.max(...corners.map(p => p.y)) - Math.min(...corners.map(p => p.y));
-    const halfH = portrait ? 6.5 / aspect : Math.max(viewH / 2 + .65, (viewW / 2 + .45) / aspect);
+    // Reserve only the small overlay controls; use the remaining screen.
+    const usableHeight = Math.max(height * .65, height - 128);
+    const usableWidth = Math.max(width * .8, width - 16);
+    const halfH = Math.max((viewH / 2 + .2) * height / usableHeight, (viewW / 2 + .15) * width / usableWidth / aspect);
     this.camera.left = -halfH * aspect; this.camera.right = halfH * aspect;
     this.camera.top = halfH; this.camera.bottom = -halfH; this.camera.updateProjectionMatrix();
   }
@@ -329,49 +353,27 @@ export class DepotScene {
   animate(duration: number, update: Motion['update'], done?: () => void) {
     this.motions.push({ elapsed: 0, duration: this.reduced ? Math.min(duration, .22) : duration, update, done });
   }
-  follow(group: THREE.Group, points: THREE.Vector3[], done: () => void, initialDelay = 0) {
-    const unique = points.filter((point, i) => i === 0 || point.distanceTo(points[i - 1]) > .01);
-    const lengths = unique.slice(1).map((point, i) => point.distanceTo(unique[i]));
-    const total = lengths.reduce((sum, n) => sum + n, 0);
-    this.animate(total / 10 + .3 + initialDelay, t => {
-      const adjusted = Math.max(0, (t * (total / 10 + .3 + initialDelay) - initialDelay) / (total / 10 + .3));
-      if (!adjusted) return;
-      const distance = ease(Math.min(1, adjusted)) * total;
-      let travelled = 0;
-      for (let i = 0; i < lengths.length; i++) {
-        if (distance <= travelled + lengths[i] || i === lengths.length - 1) {
-          const factor = Math.min(1, (distance - travelled) / lengths[i]);
-          group.position.lerpVectors(unique[i], unique[i + 1], factor);
-          const delta = unique[i + 1].clone().sub(unique[i]);
-          const angle = Math.atan2(-delta.x, -delta.z);
-          const diff = Math.atan2(Math.sin(angle - group.rotation.y), Math.cos(angle - group.rotation.y));
-          group.rotation.y += diff * .24;
-          break;
-        }
-        travelled += lengths[i];
-      }
-    }, done);
+  follow(bus: Bus, points: Point[], done: () => void, reverseFirst = false) {
+    this.trips.set(bus.id, { group: this.buses.get(bus.id)!.group, end: points.at(-1)!, done });
+    this.traffic.start(bus.id, bus.length, points, reverseFirst);
   }
-  drive(bus: Bus, done: () => void) {
-    const visual = this.buses.get(bus.id)!; const start = visual.group.position.clone();
-    const end = v(DOCK_X[bus.dock!], DOCK_Z, .08);
-    const points = [start];
-    // All travel follows the border; no route cuts through the parked buses.
-    if (bus.direction === 'N') points.push(v(start.x, -2.65, .08));
-    if (bus.direction === 'E') points.push(v(5.35, start.z, .08), v(5.35, -2.65, .08));
-    if (bus.direction === 'W') points.push(v(-5.35, start.z, .08), v(-5.35, -2.65, .08));
-    if (bus.direction === 'S') points.push(v(start.x, 7.9, .08), v(-5.35, 7.9, .08), v(-5.35, -2.65, .08));
-    points.push(v(end.x, -2.65, .08), end);
-    this.follow(visual.group, points, () => {
+  planArrival(bus: Bus, stops: number[]) {
+    return this.traffic.planArrival(bus, stops);
+  }
+  drive(bus: Bus, done: () => void, points = arrivalRoute(bus, this.layout)) {
+    const visual = this.buses.get(bus.id)!;
+    const end = v(DOCK_X[bus.dock!], this.layout.DOCK_Z, .08);
+    this.follow(bus, points, () => {
       visual.group.position.copy(end); visual.group.rotation.y = 0; done();
     });
   }
-  bump(bus: Bus, distance: number, blocker: Bus, done: () => void) {
-    const group = this.buses.get(bus.id)!.group, other = this.buses.get(blocker.id)!.group;
-    const start = group.position.clone(); const otherStart = other.position.clone();
+  bump(bus: Bus, distance: number, done: () => void) {
+    this.bumping.add(bus.id);
+    const group = this.buses.get(bus.id)!.group;
+    const start = group.position.clone();
     const vector = VECTOR[bus.direction];
     // Include the physical gap between meshes, while stopping short of the blocker.
-    const travel = distance + .12;
+    const travel = Math.max(0, distance - .025);
     let sparked = false;
     this.animate(.52 + travel * .09, t => {
       const impactT = .43;
@@ -379,7 +381,7 @@ export class DepotScene {
       if (t < impactT) move = ease(t / impactT) * travel;
       else {
         if (!sparked) {
-          const front = start.clone().add(v(vector.x * (travel + bus.length / 2 - .1), vector.y * (travel + bus.length / 2 - .1), .55));
+          const front = start.clone().add(v(vector.x * (travel + (bus.length - .18) * BUS_SCALE / 2), vector.y * (travel + (bus.length - .18) * BUS_SCALE / 2), .55));
           this.burst(front, '#f6c55c', 9); sparked = true;
         }
         move = (1 - ease((t - impactT) / (1 - impactT))) * travel;
@@ -387,26 +389,27 @@ export class DepotScene {
       group.position.copy(start).add(v(vector.x * move, vector.y * move));
       const wobble = this.reduced ? 0 : Math.sin(t * 38) * .04 * Math.sin(t * Math.PI);
       group.rotation.z = wobble;
-      other.position.copy(otherStart).add(v(vector.x * wobble, vector.y * wobble));
     }, () => {
-      group.position.copy(start); group.rotation.z = 0; other.position.copy(otherStart); done();
+      group.position.copy(start); group.rotation.z = 0; this.bumping.delete(bus.id); done();
     });
   }
   departure(bus: Bus, done: () => void) {
     const group = this.buses.get(bus.id)!.group;
     const start = group.position.clone();
     // Reverse gently out of the bay, turn onto the road, then head off the map.
-    const points = [start, v(start.x, -2.65, .08), v(6.1, -2.65, .08), v(9.5, -2.65, .08)];
     this.burst(start.clone().add(v(0, .6, .2)), '#d7ead8', 7);
-    this.follow(group, points, () => { group.visible = false; done(); }, .3);
+    const points = departureRoutes(bus, this.layout).map(points => ({ points, arrival: this.traffic.estimate(bus.id, bus.length, points, true) }))
+      .sort((a, b) => a.arrival - b.arrival)[0].points;
+    this.follow(bus, points, () => { group.visible = false; done(); }, true);
   }
   queuePosition(index: number) {
-    const row = Math.floor(index / 7), column = index % 7;
-    return v((row === 0 ? 3 - column : -3 + column) * .55, -6.5 - row * .48, .12);
+    const row = Math.floor(index / 8), column = index % 8;
+    return v((row % 2 === 0 ? 3.5 - column : column - 3.5) * .5, this.layout.PLAZA_FRONT_Z - .55 - row * .34, .12);
   }
   linePosition(lane: number, index: number) {
-    const col = index % 4, row = Math.floor(index / 4);
-    return v((lane === 0 ? -4.35 : 4.35) + (col - 1.5) * .37, -7.65 - row * .39, .12);
+    const col = index % 6, row = Math.floor(index / 6), side = lane === 0 ? -1 : 1;
+    const bend = Math.pow(Math.max(0, 1 - row / 5), 2) * .2;
+    return v(side * (4.8 - bend) + (col - 2.5) * .4, this.layout.PLAZA_FRONT_Z - 2 - row * .34, .12);
   }
   syncPeople(initial = false) {
     const visible = new Set<number>();
@@ -414,32 +417,32 @@ export class DepotScene {
       visible.add(person.id);
       let visual = this.people.get(person.id);
       if (!visual) {
-        const mesh = new THREE.Mesh(personGeometry, material(PALETTE[person.color].hex));
-        mesh.castShadow = true;
-        mesh.position.copy(initial ? target : this.linePosition(person.lane, 24));
-        this.scene.add(mesh);
-        visual = { mesh, target, boarding: false, phase: person.id * .83 }; this.people.set(person.id, visual);
+        const mesh = new THREE.Object3D(); mesh.scale.setScalar(PERSON_SCALE);
+        mesh.position.copy(initial ? target : this.linePosition(person.lane, VISIBLE_PER_LINE));
+        visual = { mesh, color: person.color, target, boarding: false, phase: person.id * .83 }; this.people.set(person.id, visual);
       }
       if (!visual.boarding) visual.target.copy(target);
     };
     this.state.queue.forEach((person, i) => add(person, this.queuePosition(i)));
-    this.state.lines.forEach((line, lane) => line.slice(0, 24).forEach((person, i) => add(person, this.linePosition(lane, i))));
+    this.state.lines.forEach((line, lane) => line.slice(0, VISIBLE_PER_LINE).forEach((person, i) => add(person, this.linePosition(lane, i))));
     for (const [id, visual] of this.people) if (!visible.has(id) && !visual.boarding) {
       this.scene.remove(visual.mesh); this.people.delete(id);
     }
+    this.mount.dataset.people = String(this.people.size);
   }
-  board(person: Person, bus: Bus) {
+  board(person: Person, bus: Bus, order = 0) {
     const visual = this.people.get(person.id);
     if (!visual) return;
     visual.boarding = true;
     const start = visual.mesh.position.clone();
-    const end = v(DOCK_X[bus.dock!] + .45, DOCK_Z - .6, .12);
-    const via = v(end.x, -5.85, .12);
-    this.animate(.43, t => {
+    const end = v(DOCK_X[bus.dock!] + .45 * BUS_SCALE, this.layout.DOCK_Z - .6 * BUS_SCALE, .12);
+    const via = v(end.x, this.layout.PLAZA_FRONT_Z - .25, .12), delay = order % 12 * .025, duration = .7 + delay;
+    this.animate(duration, progress => {
+      const t = Math.max(0, (progress * duration - delay) / .7);
       if (t < .55) visual.mesh.position.lerpVectors(start, via, ease(t / .55));
       else visual.mesh.position.lerpVectors(via, end, ease((t - .55) / .45));
       visual.mesh.position.y += Math.sin(t * Math.PI * 6) * .025;
-      visual.mesh.scale.setScalar(t > .83 ? Math.max(.03, (1 - t) / .17) : 1);
+      visual.mesh.scale.setScalar(PERSON_SCALE * (t > .83 ? Math.max(.03, (1 - t) / .17) : 1));
     }, () => { this.scene.remove(visual.mesh); this.people.delete(person.id); });
   }
   burst(position: THREE.Vector3, color: string, count: number) {
@@ -461,10 +464,22 @@ export class DepotScene {
   busScreenPosition(id: string) {
     const bus = this.buses.get(id);
     if (!bus) return null;
-    return this.project(bus.group.position.clone().add(new THREE.Vector3(0, .65, 0)));
+    return this.project(bus.group.position.clone().add(new THREE.Vector3(0, .84 * BUS_SCALE, 0)));
   }
   update(dt: number) {
     this.elapsed += dt;
+    const finished = this.traffic.update(dt, this.reduced);
+    for (const route of this.traffic.routes.values()) {
+      const group = this.trips.get(route.id)!.group;
+      group.position.set(route.position.x, .08, route.position.z);
+      const angle = Math.atan2(Math.sin(route.heading - group.rotation.y), Math.cos(route.heading - group.rotation.y));
+      group.rotation.y += angle * (1 - Math.exp(-dt * 18));
+    }
+    for (const id of finished) {
+      const trip = this.trips.get(id)!; this.trips.delete(id);
+      trip.group.position.set(trip.end.x, .08, trip.end.z); trip.done();
+    }
+    this.mount.dataset.traffic = String(this.traffic.routes.size);
     const running = [...this.motions];
     for (const motion of running) {
       motion.elapsed += dt;
@@ -482,6 +497,16 @@ export class DepotScene {
       visual.mesh.position.y = visual.target.y + (moving && !this.reduced ? Math.abs(Math.sin(this.elapsed * 17 + visual.phase)) * .045 : 0);
       visual.mesh.rotation.z = moving && !this.reduced ? Math.sin(this.elapsed * 17 + visual.phase) * .06 : 0;
     }
+    const counts = new Map<BusColor, number>();
+    for (const visual of this.people.values()) {
+      const index = counts.get(visual.color) ?? 0;
+      visual.mesh.updateMatrix();
+      this.peopleInstances.get(visual.color)!.setMatrixAt(index, visual.mesh.matrix);
+      counts.set(visual.color, index + 1);
+    }
+    for (const [color, people] of this.peopleInstances) {
+      people.count = counts.get(color) ?? 0; people.instanceMatrix.needsUpdate = true;
+    }
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i]; p.life -= dt;
       if (p.life <= 0) { this.scene.remove(p.mesh); p.mesh.geometry.dispose(); this.particles.splice(i, 1); continue; }
@@ -497,12 +522,12 @@ export class DepotScene {
       if (highlighted) {
         visual.halo.position.copy(visual.group.position); visual.halo.position.y = .095;
         const scale = this.reduced ? 1 : 1 + Math.sin(this.elapsed * 5) * .025;
-        visual.halo.scale.set(scale, 1, scale);
+        visual.halo.scale.set(scale * BUS_SCALE, 1, scale * BUS_SCALE);
       }
       const show = bus.status === 'docked' || bus.status === 'leaving';
       visual.tag.hidden = !show;
       if (show) {
-        const screen = this.project(visual.group.position.clone().add(new THREE.Vector3(0, 1.28, 0)));
+        const screen = this.project(visual.group.position.clone().add(new THREE.Vector3(0, 1.28 * BUS_SCALE, 0)));
         visual.tag.style.transform = 'translate(' + screen.x + 'px,' + screen.y + 'px) translate(-50%, -50%)';
         visual.tag.style.setProperty('--bus-color', PALETTE[bus.color].hex);
         visual.tag.textContent = (bus.status === 'leaving' ? '✓ ' : '') + bus.filled + '/' + bus.capacity;

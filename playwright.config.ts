@@ -1,5 +1,6 @@
 import { defineConfig } from '@playwright/test';
 const basePath = process.env.BASE_PATH || '/';
+const playUrl = process.env.PLAY_URL;
 export default defineConfig({
   testDir: './tests',
   testMatch: '**/*.e2e.ts',
@@ -9,7 +10,7 @@ export default defineConfig({
   workers: 1,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:4173' + basePath,
+    baseURL: playUrl || 'http://127.0.0.1:4173' + basePath,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
     launchOptions: { args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] },
@@ -18,7 +19,7 @@ export default defineConfig({
     { name: 'desktop', use: { viewport: { width: 1440, height: 1000 } } },
     { name: 'mobile', use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true } },
   ],
-  webServer: {
+  webServer: playUrl ? undefined : {
     command: 'pnpm preview --port 4173 --strictPort',
     url: 'http://127.0.0.1:4173' + basePath,
     reuseExistingServer: !process.env.CI,

@@ -1,19 +1,22 @@
-# Bus Bloom
+# Bus Jam
 
 A cozy 3D bus traffic puzzle, built with TypeScript, Three.js/WebGL, Tailwind CSS, Vite, and pnpm. No login, backend, or external runtime assets.
 
 ## Play
 
-- Click or tap a bus. It drives **forward along its roof arrow**.
+- Click or tap a bus. It drives **forward along its roof arrow**, including diagonal directions.
 - A blocked bus animates a bump, then returns to its original position.
 - A clear bus travels around the depot border to one of **five unlocked stops**.
-- Two passenger lines take alternate turns filling the shared queue.
-- Only the **first passenger** can board, and only a bus of their color.
+- Two independently shuffled overflow lines alternate to refill every vacated space in the 24-person middle group.
+- **Anyone in the middle group** can board a matching bus. Matching passengers board together, then both side lines refill the middle together.
 - A full bus leaves and releases its stop. **Every bus gone = you win.**
-- If all stops fill without a match for the front passenger, undo a dispatch or restart.
-- Undo, hints, optional synthesized sound, 2× speed, and keyboard controls are included.
+- Send several clear buses in quick succession. Each reserves its own stop immediately. Buses choose the quickest available stop and either direction around the border; booked trajectories keep crossing and opposing traffic clear.
+- If all stops fill without a match anywhere in the middle group, undo a dispatch or restart.
+- Undo, restart, hints, and the keyboard bus list stay on the game screen. The floating gear menu contains sound, double speed, help, and saved-progress status. Preferences persist on this device.
 
-Layouts are generated deterministically in reverse solution order, so every level has a solution. Passenger totals exactly match the bus capacities. The game provides continuing routes with more colors as you advance.
+Layouts pack a screen-shaped rectangular yard with an irregular mix of horizontal, vertical, and diagonal buses. New buses are placed with a clear forward exit, so reversing insertion order guarantees a solution. Each new game and restart shuffles both feeders independently; reloading preserves their saved order. Passengers are mixed in batches of four buses from the exit solution, so clearing one batch before the next remains a winning strategy with the smaller middle group. Collision checks use the rotated bus bodies. All six colors are available, and passenger totals exactly match the bus capacities. Desktop and mobile share the same camera and a full-viewport canvas with minimal overlays. The depot restores the original cream-and-sage setting with brighter buses, short curved feeder queues (six rows each), flowers, and a shelter. Larger passengers stand in wider-spaced, compact queues, while compact buses and matching collision bodies fill a taller yard on phones and a wider yard on desktop. New routes fit the available screen; resizing preserves parked positions on an active route. Yellow buses use a bright, lightly toasted yellow; outlined white arrows remain legible on the brighter yellow and pink roofs. Red is warmer and pink is lighter so their passengers and buses are easier to distinguish. The keyboard bus list scrolls in its own floating panel while the scene remains visible.
+
+The border road, bay dimensions, and bay spacing follow the bus scale. Compact bays and a shorter approach pull the passenger plaza closer to the yard; tighter camera framing gives the jam more screen space. Turning clearance still accommodates the longest bus, and changing the depot framing preserves active saved progress.
 
 ## Run locally
 
@@ -34,13 +37,13 @@ pnpm test:e2e
 pnpm preview
 ```
 
-The browser tests exercise actual canvas picking, collisions, undo, full-level completion, persistence, mobile layout, and offline reload. They run against the production build.
+The browser tests exercise actual canvas picking, collisions, undo, group boarding behind other colors, bulk refills from both sides, concurrent dispatches, full-level completion, save migration, camera alignment on desktop/mobile, and offline reload. They run against the production build. Set `PLAY_URL` to a local Docker URL to check that deployment directly.
 
 ## Saved progress and offline play
 
-Active routes, completed routes, best move counts, sound, and speed are stored in this browser's localStorage under `bus-bloom-v1`. Saves are checked before loading; interrupted bus animations settle into their destination on reload. Private browsing, clearing site data, or changing origins can remove or separate progress. Storage failure does not block play.
+Active routes, completed routes, best move counts, sound, and speed are stored in this browser's localStorage under `bus-jam-v1` (schema version 7; earlier `bus-bloom-v1` saves are imported automatically). Saves are checked before loading; interrupted bus animations settle into their destination on reload. Upgrading from an earlier layout restarts the active route with randomized feeder lines and a smaller middle group while preserving completed routes, sound, and speed preferences. Private browsing, clearing site data, or changing origins can remove or separate progress. Storage failure does not block play.
 
-Production builds generate a manifest and a versioned Workbox service worker. After the first complete online load, the game works offline, including its 3D renderer, fonts, icons, and later levels. Install from your browser's installation menu or the in-game Install button when supported. Installation and service workers need HTTPS, or localhost. Updates offer a restart button so a new build does not interrupt your route.
+Production builds generate a manifest and a versioned Workbox service worker. After the first complete online load, the game works offline, including its 3D renderer, fonts, icons, and later levels. The game-screen Install button remains available in browser mode. It triggers a supported browser install prompt or opens installation help; canceling leaves a usable retry/help action. Installed app display mode, the browser install event, and supported related-app detection hide the button after installation. Installation and service workers need HTTPS, or localhost. Updates offer a restart button so a new build does not interrupt your route.
 
 ## GitHub Pages
 
@@ -48,22 +51,22 @@ The workflow in `.github/workflows/pages.yml` tests, builds, checks the producti
 
 1. Push this project to a GitHub repository with a `main` branch.
 2. In the repository's Settings → Pages, set Source to **GitHub Actions**.
-3. Run **Deploy Bus Bloom to GitHub Pages**, or push to `main`.
+3. Run **Deploy Bus Jam to GitHub Pages**, or push to `main`.
 
 The workflow reads the Pages base path automatically, supporting both a repository subdirectory and a root user site. For other static hosting, upload `dist/`. Set `BASE_PATH` before building to target a specific subpath; the default is relative URLs.
 
-This workspace does not need a ChatGPT Sites project or authentication. No deployment is created until the repository is pushed and Pages is enabled.
+The published game is https://chrisawad.github.io/Bus-Game/. This workspace does not use ChatGPT Sites. Plain HTTP LAN or Tailscale URLs support play, but use the HTTPS Pages address for installation and offline support.
 
 ## Docker / Nginx
 
 ```sh
-docker build -t bus-bloom:local .
-docker run --rm -p 8088:80 bus-bloom:local
+docker build -t bus-jam:local .
+docker run --rm -p 8088:80 bus-jam:local
 # or
 docker compose up --build -d
 ```
 
-Open http://localhost:8088. Set BUS_BLOOM_PORT to choose another Compose host port. The multistage image builds with Node/pnpm and serves the static output from Nginx. `/healthz` supplies a health check. Hashed assets use immutable caching; HTML, the manifest, and service-worker files revalidate. Terminate HTTPS at your reverse proxy for installation/offline support on a remote host.
+Open http://localhost:8088. Set BUS_JAM_PORT to choose another Compose host port. The multistage image builds with Node/pnpm and serves the static output from Nginx. `/healthz` supplies a health check. Hashed assets use immutable caching; HTML, the manifest, and service-worker files revalidate. Terminate HTTPS at your reverse proxy for installation/offline support on a remote host.
 
 ## Repository skill
 

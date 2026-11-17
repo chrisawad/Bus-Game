@@ -1,4 +1,4 @@
-name: Deploy Bus Bloom to GitHub Pages
+name: Deploy Bus Jam to GitHub Pages
 
 on:
   push:
