@@ -19,6 +19,15 @@ describe('concurrent border traffic', () => {
     expect(traffic.planArrival(bus, [0, 1, 2, 3, 4])!.dock).toBe(4);
     expect(traffic.planArrival(bus, [0, 1])!.dock).toBe(1);
   });
+  it('includes the rewind delay when comparing arrival times around traffic', () => {
+    const traffic = new Traffic(), bus = { ...new Game().state.buses[0], direction: 'N' as const, x: 9, y: 0, length: 1.5 };
+    traffic.start('crossing', 3, [{ x: -6, z: ROAD_TOP }, { x: 6, z: ROAD_TOP }]);
+    const stops = [0, 1, 2, 3, 4], delay = .4;
+    const best = traffic.planArrival(bus, stops, delay)!;
+    const arrivals = stops.flatMap(dock => arrivalRoutes({ ...bus, dock }).map(points => traffic.estimate(bus.id, bus.length, points, false, delay)));
+    expect(best.arrival).toBe(Math.min(...arrivals));
+    expect(best.arrival).toBeGreaterThanOrEqual(delay + routeLength(best.points) / 12);
+  });
   it('moves independent buses simultaneously', () => {
     const traffic = new Traffic();
     traffic.start('a', 2, [{ x: -3, z: 0 }, { x: -3, z: -5 }]);
@@ -26,6 +35,19 @@ describe('concurrent border traffic', () => {
     traffic.update(.2);
     expect(traffic.routes.get('a')!.distance).toBeGreaterThan(0);
     expect(traffic.routes.get('b')!.distance).toBeGreaterThan(0);
+  });
+  it.each([false, true])('holds a booked origin during a short pre-departure animation (reduced=%s)', instant => {
+    const traffic = new Traffic();
+    traffic.start('front', 3, [{ x: 0, z: -4 }, { x: 0, z: -30 }], false, .2, instant);
+    traffic.start('rear', 2, [{ x: 0, z: 0 }, { x: 0, z: -30 }]);
+    traffic.update(.1, instant);
+    expect(traffic.routes.get('front')!.distance).toBe(0);
+    for (let i = 0; i < 20; i++) {
+      traffic.update(.05, instant);
+      const front = traffic.routes.get('front'), rear = traffic.routes.get('rear');
+      if (front && rear) expect(trafficOverlaps(front, rear)).toBe(false);
+    }
+    expect(traffic.routes.get('front')?.distance ?? 30).toBeGreaterThan(0);
   });
   it('keeps a following bus behind the vehicle in front on slow frames', () => {
     const traffic = new Traffic();

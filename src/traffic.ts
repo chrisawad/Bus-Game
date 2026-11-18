@@ -113,8 +113,8 @@ export class Traffic {
   routes = new Map<string, Drive>();
   private clock = 0;
   clear() { this.routes.clear(); this.clock = 0; }
-  private schedule(route: Drive) {
-    const first = Math.ceil(this.clock / TICK), now = Math.floor(this.clock / TICK);
+  private schedule(route: Drive, delay = 0) {
+    const first = Math.ceil((this.clock + delay) / TICK), now = Math.floor(this.clock / TICK);
     const last = Math.max(first, ...[...this.routes.values()].map(r => r.startTick + r.frames.length)) + 1;
     // Book complete trajectories: independent and following trips overlap,
     // while opposing traffic waits at its origin instead of gridlocking.
@@ -133,25 +133,25 @@ export class Traffic {
     }
     return last;
   }
-  estimate(id: string, length: number, points: Point[], reverseFirst = false) {
+  estimate(id: string, length: number, points: Point[], reverseFirst = false, delay = 0, instant = false) {
     const route = makeDrive(id, length, points, reverseFirst);
-    return this.schedule(route) * TICK + route.total / SPEED;
+    return this.schedule(route, delay * (instant ? 70 / SPEED : 1)) * TICK + route.total / SPEED;
   }
-  planArrival(bus: Bus, stops: number[]) {
+  planArrival(bus: Bus, stops: number[], delay = 0, instant = false) {
     const options = stops.flatMap(dock => arrivalRoutes({ ...bus, dock }, this.layout).map(points => ({ dock, points, distance: routeLength(points) })))
       .sort((a, b) => a.distance - b.distance);
     let best: (typeof options[number] & { arrival: number }) | undefined;
     for (const option of options) {
       // A longer route cannot beat the current choice even without traffic.
-      if (best && this.clock + option.distance / SPEED >= best.arrival) break;
-      const arrival = this.estimate(bus.id, bus.length, option.points);
+      if (best && this.clock + delay * (instant ? 70 / SPEED : 1) + option.distance / SPEED >= best.arrival) break;
+      const arrival = this.estimate(bus.id, bus.length, option.points, false, delay, instant);
       if (!best || arrival < best.arrival) best = { ...option, arrival };
     }
     return best;
   }
-  start(id: string, length: number, input: Point[], reverseFirst = false) {
+  start(id: string, length: number, input: Point[], reverseFirst = false, delay = 0, instant = false) {
     const route = makeDrive(id, length, input, reverseFirst);
-    route.startTick = this.schedule(route); this.routes.set(id, route);
+    route.startTick = this.schedule(route, delay * (instant ? 70 / SPEED : 1)); this.routes.set(id, route);
   }
   update(dt: number, instant = false) {
     this.clock += dt * (instant ? 70 / SPEED : 1);

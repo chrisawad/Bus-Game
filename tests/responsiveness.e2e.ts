@@ -8,6 +8,7 @@ test.beforeEach(async ({ page }) => {
     const set = Map.prototype.set;
     Map.prototype.set = function(k, value) {
       if (value?.group && value?.halo && value?.tag) Reflect.set(window, '__visuals', this);
+      if (value?.segments && value?.frames) Reflect.set(window, '__trafficRoutes', this);
       return set.call(this, k, value);
     };
     let draws = 0;
@@ -159,6 +160,47 @@ test('accepts a bumped bus immediately after its blocker starts leaving', async 
   }, { bus: bus.id, blocker: blocker.id, key });
   expect(after.bumps).toBe(1); expect(after.moves).toBe(2);
   expect(after.buses.find((other: Bus) => other.id === bus.id).status).toBe('arriving');
+});
+
+test('continues an interrupted bump from its visible position without snapping back', async ({ page }) => {
+  await page.clock.install({ time: new Date('2030-01-01T10:00:00Z') });
+  await open(page);
+  await page.clock.pauseAt(new Date('2030-01-01T10:01:00Z'));
+  const buses: Bus[] = (await read(page)).buses;
+  const bus = buses.find(bus => {
+    const collision = collisionFor(bus, buses);
+    return collision && collision.distance > .3 && !collisionFor(collision.blocker, buses) && !collisionFor(bus, buses.filter(other => other.id !== collision.blocker.id));
+  })!;
+  expect(bus).toBeDefined();
+  const blocker = collisionFor(bus, buses)!.blocker;
+  await page.evaluate(id => {
+    const group = Reflect.get(window, '__visuals').get(id).group;
+    Reflect.set(window, '__bumpOrigin', { x: group.position.x, z: group.position.z });
+    document.querySelector<HTMLButtonElement>('[data-bus-id="' + id + '"]')!.click();
+  }, bus.id);
+  await page.clock.runFor(150);
+  const movement = await page.evaluate(({ bus, blocker }) => {
+    const group = Reflect.get(window, '__visuals').get(bus).group, origin = Reflect.get(window, '__bumpOrigin');
+    const before = { x: group.position.x, z: group.position.z };
+    document.querySelector<HTMLButtonElement>('[data-bus-id="' + blocker + '"]')!.click();
+    document.querySelector<HTMLButtonElement>('[data-bus-id="' + bus + '"]')!.click();
+    return { before, after: { x: group.position.x, z: group.position.z }, origin,
+      reservedOrigin: Reflect.get(window, '__trafficRoutes').get(bus)?.points[0] };
+  }, { bus: bus.id, blocker: blocker.id });
+  expect(Math.hypot(movement.before.x - movement.origin.x, movement.before.z - movement.origin.z)).toBeGreaterThan(.08);
+  expect(movement.after).toEqual(movement.before);
+  expect(movement.reservedOrigin).toEqual(movement.origin);
+  expect((await read(page)).moves).toBe(2);
+  await page.clock.runFor(16);
+  const firstFrame = await page.evaluate(id => {
+    const position = Reflect.get(window, '__visuals').get(id).group.position;
+    return { x: position.x, z: position.z };
+  }, bus.id);
+  const initialGap = Math.hypot(movement.before.x - movement.origin.x, movement.before.z - movement.origin.z);
+  expect(Math.hypot(firstFrame.x - movement.origin.x, firstFrame.z - movement.origin.z)).toBeGreaterThan(initialGap * .5);
+  await page.clock.runFor(130);
+  const routeOrigin = await page.evaluate(id => Reflect.get(window, '__trafficRoutes').get(id)?.points[0], bus.id);
+  expect(routeOrigin).toEqual(movement.origin);
 });
 
 test('handles two overlapping finger taps independently', async ({ page }) => {

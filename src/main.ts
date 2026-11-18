@@ -229,7 +229,7 @@ function selectBus(id: string) {
   const bus = game.state.buses.find(bus => bus.id === id);
   if (bus && scene.bumping.has(id)) {
     if (collisionFor(bus, game.state.buses)) { say('That bus is still blocked. Clear the bus ahead first.', true); return; }
-    scene.cancelBump(bus);
+    if (game.availableStops.length) scene.cancelBump(bus);
   }
   const plan = bus?.status === 'yard' && !collisionFor(bus, game.state.buses) ? scene.planArrival(bus, game.availableStops) : undefined;
   const result = game.dispatch(id, plan?.dock);

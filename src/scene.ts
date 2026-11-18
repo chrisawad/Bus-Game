@@ -424,19 +424,29 @@ export class DepotScene {
     const motion = { elapsed: 0, duration: this.reduced ? Math.min(duration, .22) : duration, update, done };
     this.motions.push(motion); return motion;
   }
-  follow(bus: Bus, points: Point[], done: () => void, reverseFirst = false) {
+  follow(bus: Bus, points: Point[], done: () => void, reverseFirst = false, delay = 0) {
     this.trips.set(bus.id, { group: this.buses.get(bus.id)!.group, end: points.at(-1)!, done });
-    this.traffic.start(bus.id, bus.length, points, reverseFirst);
+    this.traffic.start(bus.id, bus.length, points, reverseFirst, delay, this.reduced);
   }
   planArrival(bus: Bus, stops: number[]) {
-    return this.traffic.planArrival(bus, stops);
+    const origin = yardPosition(bus, this.layout), position = this.buses.get(bus.id)!.group.position;
+    const rewinding = Math.hypot(position.x - origin.x, position.z - origin.z) > .01;
+    return this.traffic.planArrival(bus, stops, rewinding ? .12 : 0, this.reduced);
   }
   drive(bus: Bus, done: () => void, points = arrivalRoute(bus, this.layout)) {
     const visual = this.buses.get(bus.id)!;
     const end = v(DOCK_X[bus.dock!], this.layout.DOCK_Z, .08);
+    const origin = v(points[0].x, points[0].z, .08);
+    const rewinding = visual.group.position.distanceToSquared(origin) > .0001;
     this.follow(bus, points, () => {
       visual.group.position.copy(end); visual.group.rotation.y = 0; done();
-    });
+    }, false, rewinding ? .12 : 0);
+    if (rewinding) {
+      // Reserve the origin and whole trip immediately, while finishing a
+      // short, continuous rewind. Following buses see this reservation too.
+      const start = visual.group.position.clone();
+      this.animate(.12, t => visual.group.position.lerpVectors(start, origin, ease(t)));
+    }
   }
   bump(bus: Bus, distance: number, done: () => void) {
     this.bumping.add(bus.id);
@@ -469,8 +479,7 @@ export class DepotScene {
     const motion = this.bumpMotions.get(bus.id);
     if (!motion) return;
     this.motions = this.motions.filter(item => item !== motion);
-    const group = this.buses.get(bus.id)!.group, start = yardPosition(bus, this.layout);
-    group.position.set(start.x, .08, start.z); group.rotation.z = 0;
+    this.buses.get(bus.id)!.group.rotation.z = 0;
     this.bumping.delete(bus.id); this.bumpMotions.delete(bus.id);
   }
   departure(bus: Bus, done: () => void) {
