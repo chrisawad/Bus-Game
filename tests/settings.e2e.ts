@@ -52,6 +52,35 @@ test('settings remain usable when the native Popover API is unavailable', async 
   await expect(page.locator('#settings-panel')).toBeHidden();
 });
 
+test('bottom controls fit the visible viewport and clear the system navigation bar', async ({ page }) => {
+  // Model a standalone window whose layout height still includes an obscured
+  // strip. Chrome can also expose the system bar separately as a safe inset.
+  await page.addInitScript(() => {
+    Object.defineProperty(window.visualViewport!, 'height', {
+      configurable: true, get: () => window.innerHeight - 56,
+    });
+  });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'display-mode', value: 'standalone' }] });
+  await page.setViewportSize({ width: 448, height: 936 });
+  await page.goto('./');
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  for (const [width, height, bottom, right] of [[448, 936, 0, 0], [448, 936, 48, 0], [936, 448, 0, 48]]) {
+    await page.setViewportSize({ width, height });
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom, right } });
+    for (const selector of ['#undo', '#retry', '#hint']) {
+      const button = page.locator(selector);
+      await expect.poll(() => button.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(height - 56 - bottom - 12);
+      const box = (await button.boundingBox())!;
+      expect(box.x + box.width).toBeLessThanOrEqual(width - right - 12);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    await page.getByRole('button', { name: 'Restart route' }).click();
+    await expect(page.locator('[data-action="restart"]')).toBeVisible();
+    await page.locator('#dialog-close').click();
+  }
+});
+
 test('the game-screen Install action offers help before prompting and hides after install', async ({ page }, info) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'install', { configurable: true, value: undefined });

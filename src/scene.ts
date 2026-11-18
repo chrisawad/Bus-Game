@@ -149,7 +149,7 @@ const personGeometry = mergeGeometries([
   new THREE.CapsuleGeometry(.03, .12, 2, 6).rotateZ(-.2).translate(.105, .24, 0),
 ])!;
 type BusVisual = { group: THREE.Group; halo: THREE.Mesh; tag: HTMLDivElement; style: string };
-type PersonVisual = { mesh: THREE.Object3D; color: BusColor; target: THREE.Vector3; boarding: boolean; phase: number };
+type PersonVisual = { mesh: THREE.Object3D; color: BusColor; target: THREE.Vector3; boarding: boolean; queueSlot?: number };
 type Motion = { elapsed: number; duration: number; update: (t: number) => void; done?: () => void };
 type Particle = { mesh: THREE.Mesh; velocity: THREE.Vector3; life: number; max: number };
 export class DepotScene {
@@ -495,8 +495,8 @@ export class DepotScene {
     const row = Math.floor(index / 8), column = index % 8;
     return v((row % 2 === 0 ? 3.5 - column : column - 3.5) * .5, this.layout.PLAZA_FRONT_Z - .55 - row * .34, .12);
   }
-  linePosition(lane: number, index: number) {
-    const col = index % 6, row = Math.floor(index / 6), side = lane === 0 ? -1 : 1;
+  linePosition(lane: number, index: number, served: number) {
+    const col = (index + served) % 6, row = Math.floor(index / 6), side = lane === 0 ? -1 : 1;
     const bend = Math.pow(Math.max(0, 1 - row / 5), 2) * .2;
     return v(side * (4.8 - bend) + (col - 2.5) * .4, this.layout.PLAZA_FRONT_Z - 2 - row * .34, .12);
   }
@@ -508,13 +508,31 @@ export class DepotScene {
       let visual = this.people.get(person.id);
       if (!visual) {
         const mesh = new THREE.Object3D(); mesh.scale.setScalar(PERSON_SCALE);
-        mesh.position.copy(initial ? target : this.linePosition(person.lane, VISIBLE_PER_LINE));
-        visual = { mesh, color: person.color, target, boarding: false, phase: person.id * .83 }; this.people.set(person.id, visual);
+        mesh.position.copy(target);
+        if (!initial) mesh.position.z -= .34;
+        visual = { mesh, color: person.color, target, boarding: false }; this.people.set(person.id, visual);
       }
       if (!visual.boarding) visual.target.copy(target);
+      return visual;
     };
-    this.state.queue.forEach((person, i) => add(person, this.queuePosition(i)));
-    this.state.lines.forEach((line, lane) => line.slice(0, VISIBLE_PER_LINE).forEach((person, i) => add(person, this.linePosition(lane, i))));
+    // Keep each waiting passenger in place. People from the sides take the
+    // vacated spots, even when the departing group came from several rows.
+    const occupied = new Set(this.state.queue.map(person => this.people.get(person.id)?.queueSlot));
+    let nextSlot = 0;
+    for (const person of this.state.queue) {
+      let slot = this.people.get(person.id)?.queueSlot;
+      if (slot === undefined) {
+        while (occupied.has(nextSlot)) nextSlot++;
+        slot = nextSlot++;
+      }
+      add(person, this.queuePosition(slot)).queueSlot = slot;
+    }
+    this.state.lines.forEach((line, lane) => {
+      // Each feeder starts with half the passengers. Its head advances through
+      // six columns so the people behind it step forward in their own column.
+      const served = this.state.totalPassengers / 2 - line.length;
+      line.slice(0, VISIBLE_PER_LINE).forEach((person, i) => add(person, this.linePosition(lane, i, served)));
+    });
     for (const [id, visual] of this.people) if (!visible.has(id) && !visual.boarding) {
       this.scene.remove(visual.mesh); this.people.delete(id);
     }
@@ -587,14 +605,13 @@ export class DepotScene {
       }
     }
     this.peopleMoving = false;
+    const step = 1 - Math.exp(-dt * 9);
     for (const visual of this.people.values()) {
-      if (visual.boarding) continue;
-      const moving = visual.mesh.position.distanceTo(visual.target) > .003;
-      this.peopleMoving ||= moving;
-      visual.mesh.position.lerp(visual.target, 1 - Math.exp(-dt * 9));
-      if (!moving) visual.mesh.position.copy(visual.target);
-      visual.mesh.position.y = visual.target.y + (moving && !this.reduced ? Math.abs(Math.sin(this.elapsed * 17 + visual.phase)) * .045 : 0);
-      visual.mesh.rotation.z = moving && !this.reduced ? Math.sin(this.elapsed * 17 + visual.phase) * .06 : 0;
+      const position = visual.mesh.position;
+      if (visual.boarding || position.equals(visual.target)) continue;
+      position.lerp(visual.target, step);
+      if (position.distanceToSquared(visual.target) <= .003 ** 2) position.copy(visual.target);
+      else this.peopleMoving = true;
     }
     const counts = new Map<BusColor, number>();
     for (const visual of this.people.values()) {

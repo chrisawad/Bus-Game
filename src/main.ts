@@ -31,7 +31,10 @@ const icons: Record<string, string> = {
 const icon = (name: string) => '<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || '') + '</svg>';
 const el = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
-const currentYard = () => fitYard(document.documentElement.clientWidth, window.innerHeight);
+const currentYard = () => {
+  const scene = el('#scene');
+  return fitYard(scene.clientWidth, scene.clientHeight);
+};
 const newCrowdSeed = () => Math.floor(Math.random() * 0x100000000);
 let game: Game;
 const progress: Omit<Save, 'active'> = { version: 7, completed: [], best: {}, sound: false, fast: false };
@@ -113,6 +116,19 @@ el('#app').innerHTML = `
   <dialog id="dialog" aria-labelledby="dialog-title"><button class="dialog-close icon-button" id="dialog-close" type="button" aria-label="Close dialog">${icon('close')}</button><div id="dialog-content"></div></dialog>
   <div class="route-loading" id="route-loading" role="status" aria-live="polite"><div class="route-loading-card"><span class="loading-bus">${icon('bus')}</span><strong id="loading-title">Opening the depot…</strong><span id="loading-detail">Getting your buses and passengers ready.</span><span class="loading-track" aria-hidden="true"></span><button class="dialog-primary" id="loading-reload" type="button" hidden>Reload game ${icon('reset')}</button></div></div>
 </div>`;
+// Some installed Android browsers report a layout viewport taller than the
+// visible game window. Ignore pinch zoom so it can magnify the existing board.
+function fitVisibleViewport() {
+  const viewport = window.visualViewport;
+  if (viewport && viewport.scale !== 1) return;
+  const height = Math.min(window.innerHeight, viewport?.height ?? window.innerHeight);
+  if (height > 0) el('#app').style.setProperty('--visible-height', height + 'px');
+}
+fitVisibleViewport();
+window.visualViewport?.addEventListener('resize', fitVisibleViewport);
+window.addEventListener('resize', fitVisibleViewport);
+window.addEventListener('pageshow', fitVisibleViewport);
+
 const settings = setupSettings(el<HTMLButtonElement>('#settings'), el('#settings-panel'), el<HTMLButtonElement>('#settings-close'));
 function setLoading(active: boolean, title = 'Opening the depot…', detail = 'Getting your buses and passengers ready.') {
   if (graphicsFailed && !active) return;

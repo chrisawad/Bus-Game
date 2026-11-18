@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { Game, collisionFor, validState, type Bus } from '../src/game';
+import type { DepotScene } from '../src/scene';
 const key = 'bus-jam-v1';
 
 test.beforeEach(async ({ page }) => {
@@ -8,6 +9,7 @@ test.beforeEach(async ({ page }) => {
     const set = Map.prototype.set;
     Map.prototype.set = function(k, value) {
       if (value?.group && value?.halo && value?.tag) Reflect.set(window, '__visuals', this);
+      if (value?.mesh && value?.target && 'boarding' in value) Reflect.set(window, '__passengers', this);
       if (value?.segments && value?.frames) Reflect.set(window, '__trafficRoutes', this);
       return set.call(this, k, value);
     };
@@ -243,4 +245,50 @@ test('undo during group boarding preserves passengers and cancels stale animatio
   await expect(page.locator('#scene')).toHaveAttribute('data-boarding', 'false');
   await page.locator('#undo').click(); await expect(page.locator('#move-count')).toHaveText('0 MOVES');
   expect((await read(page)).boarded).toBe(0);
+});
+
+test('waiting passengers stay put while refills walk into the empty spots', async ({ page }) => {
+  await open(page);
+  const result = await page.evaluate(async key => {
+    const people: DepotScene['people'] = Reflect.get(window, '__passengers');
+    const queueIds = new Set<number>(JSON.parse(localStorage.getItem(key)!).active.queue.map((p: { id: number }) => p.id));
+    const start = new Map([...people].map(([id, p]) => [id, p.mesh.position.clone()]));
+    const initialSpots = new Set([...queueIds].map(id => start.get(id)!.toArray().join(',')));
+    const bus = document.querySelector<HTMLButtonElement>('[data-clear="true"][data-matches="true"][data-status="yard"]')!;
+    bus.click();
+    let refill = 0, waiting = 0, largestColumnShift = 0, largestSway = 0, largestWaiterMove = 0;
+    const deadline = performance.now() + 45_000;
+    while (performance.now() < deadline) {
+      await new Promise(requestAnimationFrame);
+      refill = 0; waiting = 0;
+      let moving = false;
+      for (const [id, p] of people) {
+        if (p.boarding) continue;
+        const origin = start.get(id);
+        largestSway = Math.max(largestSway, Math.abs(p.mesh.rotation.z), Math.abs(p.mesh.position.y - p.target.y));
+        if (queueIds.has(id) && p.color !== bus.dataset.color) {
+          waiting++; largestWaiterMove = Math.max(largestWaiterMove, origin!.distanceTo(p.mesh.position));
+        } else if (!queueIds.has(id) && Math.abs(p.target.x) < 2) {
+          refill++;
+        } else if (origin && Math.abs(p.target.x) > 3) {
+          largestColumnShift = Math.max(largestColumnShift, Math.abs(origin.x - p.target.x));
+        }
+        moving ||= !p.mesh.position.equals(p.target);
+      }
+      if (!moving && refill > 0 && document.querySelector<HTMLElement>('#scene')!.dataset.boarding === 'false') {
+        const slots = new Set([...people.values()].filter(p => !p.boarding && Math.abs(p.target.x) < 2)
+          .map(p => p.mesh.position.toArray().join(',')));
+        const filledOriginalSpots = slots.size === initialSpots.size && [...slots].every(slot => initialSpots.has(slot));
+        return { refill, waiting, largestColumnShift, largestSway, largestWaiterMove, filledOriginalSpots };
+      }
+    }
+    throw new Error('Passengers did not settle after boarding');
+  }, key);
+  expect(result.refill).toBeGreaterThan(0);
+  expect(result.waiting).toBeGreaterThan(0);
+  expect(result.filledOriginalSpots).toBe(true);
+  expect(result.largestWaiterMove).toBe(0);
+  expect(result.largestSway).toBe(0);
+  // The curved side rail shifts a column by at most .2 across the entire lane.
+  expect(result.largestColumnShift).toBeLessThanOrEqual(.201);
 });
