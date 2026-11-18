@@ -2,10 +2,12 @@ import './style.css';
 import { registerSW } from 'virtual:pwa-register';
 import { Game, PALETTE, collisionFor, type Bus } from './game';
 import { DepotScene } from './scene';
-import { readSave, writeSave, type Save } from './storage';
+import { readSaveText, writeSave, type Save } from './storage';
 import { fitYard } from './yard';
 import { setupSettings } from './settings';
 import { setupInstall, installInstructions } from './install';
+import { prepareLevel } from './level-loader';
+import { afterPaint } from './scheduling';
 
 const icons: Record<string, string> = {
   bus: '<rect x="4" y="3" width="16" height="16" rx="4"/><path d="M4 11h16M8 19v2m8-2v2M8 15h.01M16 15h.01M8 7h8"/>',
@@ -31,10 +33,13 @@ const el = <T extends HTMLElement>(selector: string) => document.querySelector<T
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
 const currentYard = () => fitYard(document.documentElement.clientWidth, window.innerHeight);
 const newCrowdSeed = () => Math.floor(Math.random() * 0x100000000);
-const saved = readSave(currentYard());
-let game = new Game(saved?.active.level ?? 1, saved?.active, currentYard(), newCrowdSeed());
-const progress: Omit<Save, 'active'> = { version: 7, completed: saved?.completed ?? [], best: saved?.best ?? {}, sound: saved?.sound ?? false, fast: saved?.fast ?? false };
+let game: Game;
+const progress: Omit<Save, 'active'> = { version: 7, completed: [], best: {}, sound: false, fast: false };
 let scene: DepotScene;
+let ready = false, transitioning = true;
+let graphicsFailed = false;
+let yardKey = '';
+const clearExits = new Map<string, boolean>();
 let boardingInProgress = false, boardingClock = 0, lastPhase = '';
 let modal: 'help' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | null = null;
 let messageTimer: ReturnType<typeof setTimeout>;
@@ -70,7 +75,7 @@ el('#app').innerHTML = `
       </div>
       <div class="board-card">
         <span class="sr-only" id="stops-status"></span>
-        <div id="scene" class="scene"><div class="loading"><span class="loading-bus">${icon('bus')}</span>Opening the depot…</div></div>
+        <div id="scene" class="scene" aria-busy="true"></div>
         <div class="board-footnote"><span id="move-count">0 MOVES</span></div>
         <div class="board-progress" role="progressbar" aria-label="Passengers boarded" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
       </div>
@@ -106,8 +111,28 @@ el('#app').innerHTML = `
     <p class="settings-saved" id="save-state">${icon('check')} Progress saved</p>
   </section>
   <dialog id="dialog" aria-labelledby="dialog-title"><button class="dialog-close icon-button" id="dialog-close" type="button" aria-label="Close dialog">${icon('close')}</button><div id="dialog-content"></div></dialog>
+  <div class="route-loading" id="route-loading" role="status" aria-live="polite"><div class="route-loading-card"><span class="loading-bus">${icon('bus')}</span><strong id="loading-title">Opening the depot…</strong><span id="loading-detail">Getting your buses and passengers ready.</span><span class="loading-track" aria-hidden="true"></span><button class="dialog-primary" id="loading-reload" type="button" hidden>Reload game ${icon('reset')}</button></div></div>
 </div>`;
 const settings = setupSettings(el<HTMLButtonElement>('#settings'), el('#settings-panel'), el<HTMLButtonElement>('#settings-close'));
+function setLoading(active: boolean, title = 'Opening the depot…', detail = 'Getting your buses and passengers ready.') {
+  if (graphicsFailed && !active) return;
+  transitioning = active;
+  el('#loading-title').textContent = title; el('#loading-detail').textContent = detail;
+  el('#route-loading').hidden = !active;
+  el('#route-loading').setAttribute('role', 'status'); el('#route-loading').dataset.failed = 'false';
+  el('#loading-reload').hidden = true; el('.loading-track').hidden = false;
+  el('#scene').setAttribute('aria-busy', String(active));
+  el('main').inert = active; el('header').inert = active;
+}
+function showFailure(title: string, detail: string) {
+  settings.close(); closeDialog();
+  setLoading(true, title, detail);
+  graphicsFailed = true;
+  el('#route-loading').setAttribute('role', 'alert'); el('#route-loading').dataset.failed = 'true';
+  el('.loading-track').hidden = true; el('#loading-reload').hidden = false; el('#loading-reload').focus();
+}
+el('#loading-reload').addEventListener('click', () => location.reload());
+setLoading(true);
 
 function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win') {
   if (!progress.sound || !audioReady) return;
@@ -124,6 +149,7 @@ function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win') {
   } catch { /* Play remains available without audio. */ }
 }
 function persist() {
+  if (!game) return false;
   const ok = writeSave({ ...progress, active: game.state });
   el('#save-state').innerHTML = icon(ok ? 'check' : 'help') + (ok ? 'Progress saved' : 'Save unavailable');
   el('#save-state').title = ok ? 'Saved locally on this device' : 'Browser storage is unavailable. You can still play this session.';
@@ -147,7 +173,7 @@ function updateControls() {
   el('#speed').setAttribute('aria-pressed', String(progress.fast));
 }
 function sync() {
-  scene.state = game.state;
+  scene.state = game.state; scene.dirty = true;
   const s = game.state;
   el('#scene').dataset.boarding = String(boardingInProgress);
   el('#scene').dataset.inTransit = String(s.buses.filter(bus => bus.status === 'arriving' || bus.status === 'leaving').length);
@@ -158,6 +184,12 @@ function sync() {
   el('#progress-bar').style.width = percent + '%'; el('.board-progress').setAttribute('aria-valuenow', String(Math.round(percent)));
   el('#stops-status').textContent = game.availableStops.length + (game.availableStops.length === 1 ? ' stop open' : ' stops open');
   const controlBox = el('#bus-controls');
+  const nextYardKey = [s.seed, s.yard.width, s.yard.height, ...s.buses.filter(bus => bus.status === 'yard').map(bus => bus.id)].join(':');
+  if (nextYardKey !== yardKey) {
+    yardKey = nextYardKey; clearExits.clear();
+    for (const bus of s.buses) if (bus.status === 'yard') clearExits.set(bus.id, !collisionFor(bus, s.buses));
+  }
+  const waitingColors = new Set(s.queue.map(person => person.color));
   // Real HTML controls provide a keyboard/screen-reader alternative to WebGL.
   for (const bus of s.buses) {
     let button = controlBox.querySelector<HTMLButtonElement>('[data-bus-id="' + bus.id + '"]');
@@ -165,14 +197,15 @@ function sync() {
       button = document.createElement('button'); button.type = 'button'; button.dataset.busId = bus.id;
       button.addEventListener('click', () => selectBus(bus.id)); controlBox.appendChild(button);
     }
-    const clear = !collisionFor(bus, s.buses);
-    button.dataset.clear = String(clear); button.dataset.matches = String(s.queue.some(person => person.color === bus.color));
+    const clear = clearExits.get(bus.id) ?? false;
+    button.dataset.clear = String(clear); button.dataset.matches = String(waitingColors.has(bus.color));
     button.dataset.status = bus.status; button.dataset.color = bus.color;
     button.style.setProperty('--bus-color', PALETTE[bus.color].hex);
     button.disabled = bus.status !== 'yard'; button.hidden = bus.status === 'gone';
     const dir = { N: '↑', NE: '↗', E: '→', SE: '↘', S: '↓', SW: '↙', W: '←', NW: '↖' }[bus.direction];
-    button.textContent = PALETTE[bus.color].symbol + ' ' + PALETTE[bus.color].name + ' ' + dir + ' · ' +
+    const label = PALETTE[bus.color].symbol + ' ' + PALETTE[bus.color].name + ' ' + dir + ' · ' +
       (bus.status === 'yard' ? bus.capacity + ' seats' : bus.filled + '/' + bus.capacity);
+    if (button.textContent !== label) button.textContent = label;
     button.setAttribute('aria-label', PALETTE[bus.color].name + ' bus ' + (Number(bus.id.slice(4)) + 1) + ', facing ' +
       { N: 'north', NE: 'northeast', E: 'east', SE: 'southeast', S: 'south', SW: 'southwest', W: 'west', NW: 'northwest' }[bus.direction] + ', ' + bus.capacity + ' seats, ' +
       (bus.status === 'yard' ? (clear ? 'clear exit' : 'blocked exit') : bus.status));
@@ -192,13 +225,16 @@ function sync() {
 }
 function selectBus(id: string) {
   audioReady = true;
-  if (modal || game.state.phase !== 'playing') return;
-  if (scene.bumping.has(id)) return;
+  if (!ready || transitioning || modal || game.state.phase !== 'playing') return;
   const bus = game.state.buses.find(bus => bus.id === id);
+  if (bus && scene.bumping.has(id)) {
+    if (collisionFor(bus, game.state.buses)) { say('That bus is still blocked. Clear the bus ahead first.', true); return; }
+    scene.cancelBump(bus);
+  }
   const plan = bus?.status === 'yard' && !collisionFor(bus, game.state.buses) ? scene.planArrival(bus, game.availableStops) : undefined;
   const result = game.dispatch(id, plan?.dock);
   if (result.type === 'full') { say('The stops are full. Let a matching bus fill up, or undo a move.', true); return; }
-  if (result.type === 'busy') return;
+  if (result.type === 'busy') { say('That bus is already on its way. Choose a bus in the jam.'); return; }
   if (result.type === 'bump') {
     tone('bump'); say('A little bump! Clear the ' + PALETTE[result.collision.blocker.color].name.toLowerCase() + ' bus ahead first.', true);
     scene.bump(result.bus, result.collision.distance, () => sync()); persist(); return;
@@ -207,17 +243,29 @@ function selectBus(id: string) {
   scene.drive(result.bus, () => { game.arrive(id); sync(); }, plan?.points);
   sync();
 }
-function doUndo() {
+async function doUndo() {
+  if (!ready || transitioning) return;
   if (!game.undo()) { say('Your first move is still ahead of you.'); return; }
-  const history = game.history;
+  transitioning = true;
+  const notice = setTimeout(() => setLoading(true, 'Rewinding your last move…', 'Putting your buses and passengers back.'), 120);
   closeDialog(); boardingInProgress = false; boardingClock = 0; lastPhase = '';
-  game = new Game(game.state.level, game.state); game.history = history;
-  scene.reset(game.state); sync(); say('A little rewind. Try a different bus.');
+  try {
+    await scene.reset(game.state); sync(); say('A little rewind. Try a different bus.');
+  } finally { clearTimeout(notice); setLoading(false); }
 }
-function restart(level = game.state.level) {
+async function restart(level = game.state.level) {
+  if (!ready || transitioning) return;
   closeDialog(); boardingInProgress = false; boardingClock = 0; lastPhase = '';
-  game = new Game(level, undefined, currentYard(), newCrowdSeed()); scene.reset(game.state); el('#bus-controls').innerHTML = '';
-  sync(); say('A fresh start. Find a bus with a clear exit.');
+  settings.close(); setLoading(true, 'Making room for a fresh start…', 'Arranging the jam and shuffling both queues.');
+  try {
+    await afterPaint();
+    const { state } = await prepareLevel({ type: 'level', level, yard: currentYard(), crowdSeed: newCrowdSeed() });
+    game = new Game(level, state); await scene.reset(game.state); el('#bus-controls').innerHTML = '';
+    sync(); scene.update(0); await afterPaint(); say('A fresh start. Find a bus with a clear exit.');
+  } catch (error) {
+    console.error('Could not restart the route', error);
+    say('This route could not be prepared. Please try Restart again.', true, 0);
+  } finally { setLoading(false); }
 }
 function showDialog(kind: NonNullable<typeof modal>) {
   settings.close();
@@ -296,7 +344,7 @@ el('#hint').addEventListener('click', () => {
 el('#sound').addEventListener('click', () => { audioReady = true; progress.sound = !progress.sound; tone('tap'); updateControls(); persist(); });
 el('#speed').addEventListener('click', () => { progress.fast = !progress.fast; updateControls(); persist(); });
 window.addEventListener('keydown', event => {
-  if (modal || settings.isOpen() || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName)) return;
+  if (!ready || transitioning || modal || settings.isOpen() || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName)) return;
   const key = event.key.toLowerCase();
   if (key === 'z') { event.preventDefault(); doUndo(); } if (key === 'h') el<HTMLButtonElement>('#hint').click(); if (key === 'r') showDialog('retry');
 });
@@ -305,7 +353,7 @@ const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDi
 });
 void installFlow.ready.then(() => { installChecked = true; });
 function showPendingNotice() {
-  if (modal || applyingUpdate || settings.isOpen() || game.state.phase !== 'playing') return;
+  if (!ready || transitioning || modal || applyingUpdate || settings.isOpen() || game.state.phase !== 'playing') return;
   if (updateAvailable && !updatePrompted) { updatePrompted = true; showDialog('update'); return; }
   if (installChecked && !installPrompted && !installFlow.isInstalled()) {
     installPrompted = true;
@@ -329,22 +377,33 @@ el('#update').addEventListener('click', () => showDialog('update'));
 window.addEventListener('offline', () => { el('#offline-state').textContent = 'Playing offline · Progress saved'; });
 window.addEventListener('online', () => { el('#offline-state').textContent = 'Saved on this device'; });
 window.addEventListener('pagehide', persist);
-el('#scene').addEventListener('graphicslost', () => { persist(); say('The graphics paused. Reload to continue your saved route.', true, 0); });
+el('#scene').addEventListener('graphicslost', () => {
+  const saved = persist();
+  showFailure('The graphics paused', saved ? 'Your route is saved. Reload to continue where you left off.' : 'Reload to restore the graphics. Browser storage is unavailable, so unsaved moves will be lost.');
+});
+async function boot() {
 try {
-  scene = new DepotScene(el('#scene'), game.state, selectBus); el('.loading').remove();
+  await afterPaint();
+  const { saved, state } = await prepareLevel({ type: 'load', raw: readSaveText(), yard: currentYard(), crowdSeed: newCrowdSeed() });
+  if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast });
+  game = new Game(state.level, state);
+  scene = new DepotScene(el('#scene'), game.state, selectBus);
+  await scene.reset(game.state);
   scene.onHover = (bus: Bus | null) => {
     if (!modal) el('#scene').setAttribute('title', bus ? PALETTE[bus.color].name + ' bus · ' + bus.capacity + ' seats · Click to drive' : '');
   };
   sync();
+  scene.renderer.domElement.hidden = false;
+  scene.update(0); await afterPaint(); ready = true; setLoading(false);
   if (saved?.migrated) say('Your completed routes are saved. This route now has shuffled lines and a smaller middle group.', false, 6000);
   let previous = performance.now();
   function frame(now: number) {
     const realDt = Math.min((now - previous) / 1000, .5); previous = now;
     if (!document.hidden) {
       const dt = realDt * (progress.fast ? 2 : 1);
-      if (!modal || modal === 'won') scene.update(dt);
+      if (!transitioning && (!modal || modal === 'won')) scene.update(dt);
       showPendingNotice();
-      if (!modal && !boardingInProgress) {
+      if (!transitioning && !modal && !boardingInProgress) {
         boardingClock += dt;
         if (boardingClock >= .15) {
           boardingClock = 0;
@@ -371,5 +430,7 @@ try {
   requestAnimationFrame(frame);
 } catch (error) {
   console.error('3D renderer could not start', error);
-  el('#scene').innerHTML = '<div class="graphics-error">' + icon('bus') + '<h2>Your depot needs WebGL 2</h2><p>Enable hardware acceleration or try a browser with WebGL support, then reload. Your progress is saved.</p></div>';
+  showFailure('The depot could not open', 'Try reloading. If this keeps happening, check that hardware acceleration and WebGL 2 are enabled in your browser.');
 }
+}
+void boot();

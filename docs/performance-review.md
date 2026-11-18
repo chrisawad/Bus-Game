@@ -1,0 +1,24 @@
+# Bus Jam performance and correctness review
+
+Reviewed the gameplay model, deterministic generation, collision geometry, traffic reservations, renderer and resource ownership, pointer input, UI synchronization, saves and migration, settings, installation/update flows, and Pages/Docker configuration. The focus was reproducing slow new games, undo stalls, and ignored bus presses while preserving the approved layout and existing progress.
+
+## Findings and fixes
+
+| Finding | Change | Evidence |
+| --- | --- | --- |
+| Undo destroyed and rebuilt every bus, merged geometry, uploaded buffers again, and reset the canvas size. | Keep compatible visuals and share a bounded set of bus templates; resize the drawing buffer only when its dimensions change. Normalize restored trips directly in the model. | Representative mobile-browser undo click-handler samples fell from 1,254–1,507 ms to 2–10 ms. Regression checks verify object identity across eight undos and completion below 250 ms with 4× CPU throttling. |
+| Cold generation and saved-route validation blocked the UI before useful feedback could paint. | Run both in a reusable module worker; paint startup/restart feedback first, keep gameplay inert during setup, and use cooperative 8 ms task budgets if workers fail. Slow undo also gets delayed feedback. | A worker-response gate verifies that loading feedback paints while preparation is pending. Separate tests cover blocked Worker/Scheduler APIs and worker network failure. |
+| Collision checks allocated arrays repeatedly and tested duplicate separating axes. | Iterate projections without temporary arrays and deduplicate parallel axes. | Existing collision and traffic tests plus hashes captured from the published generator prove that six desktop, phone, and default-yard routes retain identical buses and crowds. |
+| Detailed triangle picking could miss small roofs and cost substantial work on each pointer event. | Pick solid bus bodies, then allow a small distance from the projected roof edge when there is no exact body hit. Exact hits take priority over nearby candidates. | Actual canvas checks, diagonal-bus checks, and outline-distance tests. |
+| Pointer releases were treated as taps without tracking where the gesture started; a bumping bus silently ignored retries after its blocker left. | Track each touch pointer independently, highlight on press, retain the intended bus through small jitter, cancel drags/cancelled pointers, and cancel the old bump motion when a newly clear bus is dispatched. | Mouse/touch gesture tests, overlapping finger taps, and a blocked → blocker dispatched → immediate retry regression. |
+| The renderer redrew the entire idle puzzle and updated instance buffers continuously. | Stop GPU draws on settled boards; invalidate for resize, state changes, highlighting, and motion. Use simpler rounded geometry for small details. | A draw-call check verifies that settled boards issue no draws; desktop/mobile screenshots verify the retained appearance. |
+| A lost graphics context left a frozen board with only a brief message. | Save progress and show an actionable reload screen, disabling invisible gameplay. Do not claim a save succeeded if storage fails. | A real `WEBGL_lose_context` check verifies the notice and restores the dispatched move after reload. |
+| Malformed best-score metadata passed save validation. | Validate score keys, values, and achievement level bounds before restoration. | Corrupted-metadata tests, existing migrations, and save round trips. |
+
+## Measurement limits
+
+The representative before/after timing samples used the production bundle in Chromium with a 390×844 mobile viewport on this Windows host. Rendering used SwiftShader, so these are reproducible lab measurements, not measurements from the user's physical phone. Handler duration is distinct from full interaction-to-paint latency. The regression suite additionally checks real UI commits under CPU throttling and actual pointer flows; it does not claim a particular frame rate on every device.
+
+Final local Docker checks measured eight undo UI commits per viewport at 4× CPU throttling: 23–97 ms on desktop and 22–121 ms on mobile. The check observes the counter mutation directly, before painting, and separately verifies reuse of every bus visual. It keeps the 250 ms regression ceiling unchanged; timer polling would conflate a later software-rendered frame with the time of the UI commit.
+
+Production dependency audit reported no known advisories. The local Docker deployment is tested before publication. The complete suite includes full-level wins, concurrent traffic, group boarding/refills, route advancement, migrations, install/update dialogs, failed-save update retries, and offline reload with the new worker asset precached.

@@ -27,4 +27,11 @@ describe('save migration', () => {
     vi.stubGlobal('localStorage', { setItem: () => { throw new Error('storage unavailable'); } });
     expect(writeSave(save)).toBe(false);
   });
+  it('rejects malformed achievement and best-score metadata', () => {
+    const save = { version: 7, active: makeLevel(1), completed: [1], best: { 1: 63 }, sound: false, fast: false };
+    for (const corrupt of [{ completed: [10000] }, { best: [] }, { best: { 1: -2 } }, { best: { 1: 'many' } }, { best: { x: 1 } }]) {
+      vi.stubGlobal('localStorage', { getItem: () => JSON.stringify({ ...save, ...corrupt }) });
+      expect(readSave()).toBeNull();
+    }
+  });
 });

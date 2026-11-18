@@ -1,5 +1,6 @@
 import { rectangle, polygonsOverlap, sweepDistance, type Polygon } from './geometry';
 import { BUS_SCALE, DEFAULT_YARD, type YardSize } from './yard';
+import { yieldToBrowser } from './scheduling';
 export { BUS_SCALE, DEFAULT_YARD, type YardSize } from './yard';
 
 export const PALETTE = {
@@ -73,7 +74,7 @@ export function collisionFor(bus: Bus, buses: Bus[]): Collision | null {
 }
 
 const levelCache = new Map<string, GameState>();
-export function makeLevel(level: number, yard: YardSize = DEFAULT_YARD, crowdSeed = 9217 + level * 7919): GameState {
+function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Generator<void, GameState> {
   const key = [level, yard.width, yard.height].join(':');
   if (levelCache.has(key)) return fillCrowd(clone(levelCache.get(key)!), crowdSeed);
   const seed = 9217 + level * 7919;
@@ -87,6 +88,7 @@ export function makeLevel(level: number, yard: YardSize = DEFAULT_YARD, crowdSee
     const exposed = buses.filter(bus => !collisionFor(bus, buses));
     let best: { bus: Bus; shape: Polygon; score: number } | undefined;
     for (let attempt = 0; attempt < 1400; attempt++) {
+      if (attempt % 32 === 0) yield;
       const roll = rng(), length = index < 38 ? (roll < .08 ? 3 : 2) : (roll < .7 ? 1.5 : 2);
       const bus: Bus = { id: 'bus-' + index, x: .55 + rng() * (yard.width - 1.1), y: .55 + rng() * (yard.height - 1.1), length,
         direction: directions[Math.floor(rng() * directions.length)], color: colors[Math.floor(rng() * colors.length)],
@@ -109,6 +111,23 @@ export function makeLevel(level: number, yard: YardSize = DEFAULT_YARD, crowdSee
   if (levelCache.size >= 12) levelCache.delete(levelCache.keys().next().value!);
   levelCache.set(key, clone(state));
   return fillCrowd(state, crowdSeed);
+}
+
+export function makeLevel(level: number, yard: YardSize = DEFAULT_YARD, crowdSeed = 9217 + level * 7919): GameState {
+  const work = generateLevel(level, yard, crowdSeed);
+  let step = work.next();
+  while (!step.done) step = work.next();
+  return step.value;
+}
+
+export async function makeLevelAsync(level: number, yard: YardSize = DEFAULT_YARD, crowdSeed = 9217 + level * 7919): Promise<GameState> {
+  const work = generateLevel(level, yard, crowdSeed);
+  let deadline = performance.now() + 8, step = work.next();
+  while (!step.done) {
+    if (performance.now() >= deadline) { await yieldToBrowser(); deadline = performance.now() + 8; }
+    step = work.next();
+  }
+  return step.value;
 }
 
 function fillCrowd(state: GameState, crowdSeed: number): GameState {
@@ -213,7 +232,7 @@ export class Game {
   undo() {
     const previous = this.history.pop();
     if (!previous) return false;
-    this.state = previous;
+    this.state = normalizeRestored(previous);
     return true;
   }
   hint() {
@@ -233,8 +252,7 @@ export function normalizeRestored(state: GameState) {
 export function validState(input: unknown): input is GameState {
   try {
     const s = input as GameState;
-    if (!s || !Number.isInteger(s.level) || s.level < 1 || s.level > 9999) return false;
-    if (!s.yard || ![s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n >= 6.5 && n <= 23 && n * 2 === Math.round(n * 2)) || s.yard.width * s.yard.height > 200) return false;
+    if (!validLevelMetadata(s)) return false;
     if (!Number.isInteger(s.crowdSeed) || s.crowdSeed < 0 || s.crowdSeed > 0xffffffff) return false;
     const initial = makeLevel(s.level, s.yard, s.crowdSeed);
     if (s.seed !== initial.seed || s.buses.length !== initial.buses.length || !Array.isArray(s.queue) ||
@@ -271,4 +289,10 @@ export function validState(input: unknown): input is GameState {
       people.filter(p => p.color === color).length + s.buses.filter(b => b.color === color).reduce((n, b) => n + b.filled, 0)
       === initial.buses.filter(b => b.color === color).reduce((n, b) => n + b.capacity, 0));
   } catch { return false; }
+}
+
+export function validLevelMetadata(s: Pick<GameState, 'level' | 'yard'> | null | undefined): s is Pick<GameState, 'level' | 'yard'> {
+  return !!s && Number.isInteger(s.level) && s.level >= 1 && s.level <= 9999 && !!s.yard &&
+    [s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n >= 6.5 && n <= 23 && n * 2 === Math.round(n * 2)) &&
+    s.yard.width * s.yard.height <= 200;
 }

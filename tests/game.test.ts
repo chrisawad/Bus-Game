@@ -162,4 +162,14 @@ describe('dense depot and group boarding', () => {
     expect(validState({ ...game.state, phase: 'won' })).toBe(false);
     expect(validState(null)).toBe(false);
   });
+  it('settles interrupted trips when undo restores an overlapping dispatch', () => {
+    const game = new Game();
+    const [first, second] = [...game.state.buses].reverse();
+    game.dispatch(first.id); game.dispatch(second.id);
+    expect(game.undo()).toBe(true);
+    expect(game.state.buses.find(bus => bus.id === first.id)?.status).toBe('docked');
+    expect(game.state.buses.find(bus => bus.id === second.id)?.status).toBe('yard');
+    expect(validState(game.state)).toBe(true);
+    expect(game.undo()).toBe(true); expect(game.state.moves).toBe(0);
+  });
 });

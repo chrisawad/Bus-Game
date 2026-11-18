@@ -39,6 +39,10 @@ pnpm preview
 
 The browser tests exercise actual canvas picking, collisions, undo, group boarding behind other colors, bulk refills from both sides, concurrent dispatches, full-level completion, save migration, camera alignment on desktop/mobile, and offline reload. They run against the production build. Set `PLAY_URL` to a local Docker URL to check that deployment directly.
 
+Route generation and saved-route validation run in a reusable Web Worker. If workers are blocked, the same deterministic generator yields in short tasks using `scheduler.yield()` where supported and a timer fallback elsewhere. Startup and fresh routes paint loading feedback before setup; input is held until the board is ready. Undo reuses existing bus meshes instead of rebuilding them. A settled board stops drawing until movement or highlighting requires another frame. Lost graphics contexts offer a reload action and save the route when storage is available.
+
+The responsiveness tests also exercise touch press feedback, finger jitter, cancelled gestures, immediate retry after a blocker leaves, worker failures, and repeated undo with CPU throttling. See [the performance review](docs/performance-review.md) for findings and measurement limits.
+
 ## Saved progress and offline play
 
 Active routes, completed routes, best move counts, sound, and speed are stored in this browser's localStorage under `bus-jam-v1` (schema version 7; earlier `bus-bloom-v1` saves are imported automatically). Saves are checked before loading; interrupted bus animations settle into their destination on reload. Upgrading from an earlier layout restarts the active route with randomized feeder lines and a smaller middle group while preserving completed routes, sound, and speed preferences. Private browsing, clearing site data, or changing origins can remove or separate progress. Storage failure does not block play.

@@ -13,6 +13,7 @@ test.beforeEach(async ({ page }) => {
 async function openDepot(page: Page) {
   await page.goto('./');
   await expect(page.locator('#scene canvas')).toBeVisible();
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
   const save = await read(page);
   await expect(page.locator('[data-bus-id]')).toHaveCount(save.active.buses.length);
   await expect(page.locator('#scene')).toHaveAttribute('data-people', '96');
@@ -71,6 +72,7 @@ test('preserves parked positions on resize and fits a new rectangle on restart',
   expect((await read(page)).active).toEqual(original.active);
   await page.locator('#retry').click();
   await page.locator('[data-action="restart"]').click();
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
   const restarted = await read(page);
   expect(restarted.active.crowdSeed).not.toBe(original.active.crowdSeed);
   for (const lane of [0, 1]) expect(restarted.active.lines[lane]).not.toEqual(original.active.lines[lane]);
@@ -80,6 +82,7 @@ test('preserves parked positions on resize and fits a new rectangle on restart',
   await canvasClick(page, bus!);
   await expect.poll(async () => (await read(page)).active.moves).toBe(1);
   await page.reload();
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
   expect((await read(page)).active.yard).toEqual(restarted.active.yard);
   expect((await read(page)).active.crowdSeed).toEqual(restarted.active.crowdSeed);
 });

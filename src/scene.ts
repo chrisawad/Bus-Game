@@ -3,6 +3,8 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { BUS_SCALE, VISIBLE_PER_LINE, PALETTE, VECTOR, directionAngle, type Bus, type BusColor, type GameState, type Person } from './game';
 import { Traffic, createDepotLayout, DOCK_X, BAY_WIDTH, BAY_LENGTH, YARD_TOP, arrivalRoute, departureRoutes, yardPosition, type DepotLayout, type Point } from './traffic';
+import { yieldToBrowser } from './scheduling';
+import { distanceToOutline } from './picking';
 const v = (x: number, z: number, y = 0) => new THREE.Vector3(x, y, z);
 const PERSON_SCALE = 1.75;
 const ease = (t: number) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -12,9 +14,11 @@ function material(color: string) {
   return materialCache.get(color)!;
 }
 const geometryCache = new Map<string, THREE.BufferGeometry>();
+const busTemplates = new Map<string, THREE.Group>();
+const busStyle = (bus: Bus) => bus.color + ':' + bus.length;
 function rounded(w: number, h: number, d: number, r = .08) {
   const key = [w, h, d, r].join(',');
-  if (!geometryCache.has(key)) geometryCache.set(key, new RoundedBoxGeometry(w, h, d, 2, r));
+  if (!geometryCache.has(key)) geometryCache.set(key, new RoundedBoxGeometry(w, h, d, 1, r));
   return geometryCache.get(key)!;
 }
 function box(parent: THREE.Object3D, w: number, h: number, d: number, color: string, x = 0, y = 0, z = 0, radius = .06) {
@@ -82,6 +86,8 @@ function rail(parent: THREE.Object3D, points: THREE.Vector3[], color = '#fbf9ef'
   mesh.castShadow = true; parent.add(mesh);
 }
 function createBus(bus: Bus) {
+  const cached = busTemplates.get(busStyle(bus));
+  if (cached) return cached.clone();
   const group = new THREE.Group();
   const color = PALETTE[bus.color], length = bus.length - .18;
   box(group, .79, .5, length, bus.color === 'yellow' ? '#f4c207' : color.hex, 0, .43, 0, .13);
@@ -128,10 +134,11 @@ function createBus(bus: Bus) {
   // Shape marks provide a second cue alongside bus color.
   groundLabel(group, color.symbol, 0, length / 2 - .32, bus.length < 2 ? .25 : .32, '#fffdf2').position.y = .81;
   mergeStaticMeshes(group);
+  wheelGeometry.dispose(); hubGeometry.dispose();
   group.scale.setScalar(BUS_SCALE);
-  group.traverse(child => { child.userData.busId = bus.id; });
   group.userData.length = length * BUS_SCALE;
-  return group;
+  busTemplates.set(busStyle(bus), group);
+  return group.clone();
 }
 const personGeometry = mergeGeometries([
   new THREE.SphereGeometry(.105, 10, 8).translate(0, .43, 0),
@@ -141,7 +148,7 @@ const personGeometry = mergeGeometries([
   new THREE.CapsuleGeometry(.03, .12, 2, 6).rotateZ(.2).translate(-.105, .24, 0),
   new THREE.CapsuleGeometry(.03, .12, 2, 6).rotateZ(-.2).translate(.105, .24, 0),
 ])!;
-type BusVisual = { group: THREE.Group; halo: THREE.Mesh; tag: HTMLDivElement };
+type BusVisual = { group: THREE.Group; halo: THREE.Mesh; tag: HTMLDivElement; style: string };
 type PersonVisual = { mesh: THREE.Object3D; color: BusColor; target: THREE.Vector3; boarding: boolean; phase: number };
 type Motion = { elapsed: number; duration: number; update: (t: number) => void; done?: () => void };
 type Particle = { mesh: THREE.Mesh; velocity: THREE.Vector3; life: number; max: number };
@@ -165,9 +172,15 @@ export class DepotScene {
   raycaster = new THREE.Raycaster();
   pointer = new THREE.Vector2();
   hovered: string | null = null;
+  presses = new Map<number, { id?: string; x: number; y: number }>();
+  bumpMotions = new Map<string, Motion>();
   hinted: string | null = null;
   hintUntil = 0;
   elapsed = 0;
+  dirty = true;
+  peopleMoving = true;
+  viewWidth = 1;
+  viewHeight = 1;
   reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   onSelect: (id: string) => void;
   onHover?: (bus: Bus | null) => void;
@@ -186,6 +199,7 @@ export class DepotScene {
     this.renderer.setClearColor('#eaf2eb', 0);
     this.renderer.domElement.setAttribute('aria-label', '3D bus depot. Select a bus to drive it in the direction of its arrow. Keyboard controls are available below the board.');
     this.renderer.domElement.setAttribute('role', 'img');
+    this.renderer.domElement.hidden = true;
     mount.appendChild(this.renderer.domElement);
     this.overlays = document.createElement('div'); this.overlays.className = 'scene-overlays';
     this.overlays.setAttribute('aria-hidden', 'true'); mount.appendChild(this.overlays);
@@ -204,12 +218,15 @@ export class DepotScene {
       people.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       this.peopleInstances.set(color, people); this.scene.add(people);
     }
-    this.buildEnvironment(); mergeStaticMeshes(this.world); this.reset(state);
+    this.buildEnvironment(); mergeStaticMeshes(this.world);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(mount); this.resize();
     this.renderer.domElement.addEventListener('pointermove', this.pointerMove);
     this.renderer.domElement.addEventListener('pointerleave', this.pointerLeave);
     this.renderer.domElement.addEventListener('pointerup', this.pointerUp);
+    this.renderer.domElement.addEventListener('pointerdown', this.pointerDown);
+    this.renderer.domElement.addEventListener('pointercancel', this.pointerCancel);
+    this.renderer.domElement.addEventListener('lostpointercapture', this.pointerCancel);
     this.renderer.domElement.addEventListener('webglcontextlost', event => {
       event.preventDefault();
       mount.dispatchEvent(new CustomEvent('graphicslost', { bubbles: true }));
@@ -274,23 +291,40 @@ export class DepotScene {
     box(this.world, .5, .055, .08, '#89a397', x + .22, 1.58, z, .025);
     box(this.world, .25, .08, .2, '#fff5ce', x + .39, 1.55, z, .025);
   }
-  reset(state: GameState) {
+  async reset(state: GameState) {
     const changed = state.yard.width !== this.layout.yard.width || state.yard.height !== this.layout.yard.height;
     if (changed) {
       releaseBus(this.world); this.world.clear();
       this.layout = createDepotLayout(state.yard); this.traffic = new Traffic(this.layout);
     }
-    this.state = state; this.motions = []; this.hinted = null; this.hovered = null;
+    this.state = state; this.motions = []; this.hinted = null; this.hovered = null; this.presses.clear(); this.dirty = true;
     if (changed) { this.buildEnvironment(); mergeStaticMeshes(this.world); }
-    this.traffic.clear(); this.trips.clear(); this.bumping.clear();
-    for (const visual of this.buses.values()) {
-      this.scene.remove(visual.group, visual.halo); releaseBus(visual.group); (visual.halo.material as THREE.Material).dispose(); visual.tag.remove();
+    this.traffic.clear(); this.trips.clear(); this.bumping.clear(); this.bumpMotions.clear();
+    const incoming = new Map(state.buses.map(bus => [bus.id, bus]));
+    for (const [id, visual] of this.buses) {
+      if (incoming.has(id) && visual.style === busStyle(incoming.get(id)!)) continue;
+      // Bus templates own shared geometry and materials for the scene's life.
+      this.scene.remove(visual.group, visual.halo); (visual.halo.material as THREE.Material).dispose(); visual.tag.remove();
+      this.buses.delete(id);
     }
     for (const p of this.people.values()) this.scene.remove(p.mesh);
     for (const p of this.particles) { this.scene.remove(p.mesh); p.mesh.geometry.dispose(); }
-    this.particles = []; this.people.clear(); this.buses.clear();
+    this.particles = []; this.people.clear();
+    let deadline = performance.now() + 8;
     for (const bus of state.buses) {
-      const group = createBus(bus);
+      let visual = this.buses.get(bus.id);
+      const creating = !visual;
+      if (!visual) {
+        const group = createBus(bus);
+        const halo = new THREE.Mesh(rounded(.96, .035, bus.length + .03, .12),
+          new THREE.MeshBasicMaterial({ color: '#fff9c7', transparent: true, opacity: .85 }));
+        halo.scale.set(BUS_SCALE, 1, BUS_SCALE);
+        const tag = document.createElement('div'); tag.className = 'bus-tag';
+        this.overlays.appendChild(tag); this.scene.add(group, halo);
+        visual = { group, halo, tag, style: busStyle(bus) }; this.buses.set(bus.id, visual);
+      }
+      const { group, halo, tag } = visual;
+      group.rotation.set(0, 0, 0); group.scale.setScalar(BUS_SCALE);
       if (bus.status === 'yard') {
         const p = yardPosition(bus, this.layout); group.position.copy(v(p.x, p.z, .08));
         group.rotation.y = directionAngle(bus.direction);
@@ -298,15 +332,9 @@ export class DepotScene {
         group.position.copy(v(DOCK_X[bus.dock ?? 0], this.layout.DOCK_Z, .08));
       }
       group.visible = bus.status !== 'gone';
-      this.scene.add(group);
-      const halo = new THREE.Mesh(rounded(.96, .035, bus.length + .03, .12),
-        new THREE.MeshBasicMaterial({ color: '#fff9c7', transparent: true, opacity: .85 }));
       halo.position.copy(group.position); halo.position.y = .1; halo.rotation.y = group.rotation.y;
-      halo.scale.set(BUS_SCALE, 1, BUS_SCALE);
-      halo.visible = false; this.scene.add(halo);
-      const tag = document.createElement('div'); tag.className = 'bus-tag'; tag.hidden = true;
-      this.overlays.appendChild(tag);
-      this.buses.set(bus.id, { group, halo, tag });
+      halo.visible = false; tag.hidden = true;
+      if (creating && performance.now() >= deadline) { await yieldToBrowser(); deadline = performance.now() + 8; }
     }
     this.syncPeople(true);
     this.resize();
@@ -314,7 +342,8 @@ export class DepotScene {
   resize() {
     const width = this.mount.clientWidth, height = this.mount.clientHeight;
     if (!width || !height) return;
-    this.renderer.setSize(width, height);
+    if (width !== this.viewWidth || height !== this.viewHeight) this.renderer.setSize(width, height);
+    this.viewWidth = width; this.viewHeight = height; this.dirty = true;
     const aspect = width / height;
     this.camera.position.set(0, 30, this.layout.CAMERA_TARGET_Z + 24.2);
     this.camera.lookAt(0, 0, this.layout.CAMERA_TARGET_Z);
@@ -335,23 +364,65 @@ export class DepotScene {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const groups = [...this.buses.entries()].filter(([id]) => this.state.buses.find(b => b.id === id)?.status === 'yard').map(([, visual]) => visual.group);
-    return this.raycaster.intersectObjects(groups, true)[0]?.object.userData.busId as string | undefined;
+    let hit: string | undefined, nearest = Infinity;
+    const candidates: { id: string; group: THREE.Group; length: number }[] = [];
+    // A simple solid body is both cheaper and easier to tap than thousands of
+    // rounded triangles, windows, wheels, and one-sided arrow faces.
+    for (const bus of this.state.buses) {
+      const group = this.buses.get(bus.id)?.group;
+      if (!group?.visible || bus.status === 'gone') continue;
+      group.updateWorldMatrix(true, false);
+      const ray = this.raycaster.ray.clone().applyMatrix4(group.matrixWorld.clone().invert());
+      const body = new THREE.Box3(new THREE.Vector3(-.46, .12, -bus.length / 2), new THREE.Vector3(.46, .85, bus.length / 2));
+      const point = ray.intersectBox(body, new THREE.Vector3());
+      if (point) {
+        const distance = point.applyMatrix4(group.matrixWorld).distanceToSquared(this.raycaster.ray.origin);
+        if (distance < nearest) { nearest = distance; hit = bus.id; }
+      }
+      if (bus.status === 'yard') candidates.push({ id: bus.id, group, length: bus.length });
+    }
+    if (hit) return hit;
+    // A small screen-space tolerance helps finger taps on tiny diagonal roofs.
+    // Exact body hits always win, so this never steals a neighboring bus's tap.
+    let distance = event.pointerType === 'touch' ? 9 : 3;
+    for (const candidate of candidates) {
+      const outline = [[-.43, -1], [.43, -1], [.43, 1], [-.43, 1]].map(([x, z]) =>
+        this.project(new THREE.Vector3(x, .78, z * (candidate.length - .18) / 2).applyMatrix4(candidate.group.matrixWorld)));
+      const gap = distanceToOutline({ x: event.clientX - rect.left, y: event.clientY - rect.top }, outline);
+      if (gap < distance) { distance = gap; hit = candidate.id; }
+    }
+    return hit;
   }
   pointerMove = (event: PointerEvent) => {
-    this.hovered = this.hit(event) ?? null;
+    if (event.pointerType === 'touch') return;
+    const hovered = this.hit(event) ?? null;
+    if (this.hovered !== hovered) this.dirty = true;
+    this.hovered = hovered;
     this.renderer.domElement.style.cursor = this.hovered ? 'pointer' : 'default';
     this.onHover?.(this.state.buses.find(b => b.id === this.hovered) ?? null);
   };
-  pointerLeave = () => { this.hovered = null; this.onHover?.(null); };
+  pointerLeave = () => { this.hovered = null; this.dirty = true; this.onHover?.(null); };
+  pointerDown = (event: PointerEvent) => {
+    if (event.button !== 0 || (!event.isPrimary && event.pointerType !== 'touch')) return;
+    this.presses.set(event.pointerId, { id: this.hit(event), x: event.clientX, y: event.clientY });
+    this.dirty = true;
+    this.renderer.domElement.setPointerCapture(event.pointerId);
+  };
+  pointerCancel = (event: PointerEvent) => { this.presses.delete(event.pointerId); this.dirty = true; };
   pointerUp = (event: PointerEvent) => {
     if (event.button !== 0) return;
-    const id = this.hit(event);
+    const pressed = this.presses.get(event.pointerId);
+    if (!pressed) return;
+    this.presses.delete(event.pointerId); this.dirty = true;
+    if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > 12) return;
+    if (this.renderer.domElement.hasPointerCapture(event.pointerId)) this.renderer.domElement.releasePointerCapture(event.pointerId);
+    const id = pressed.id;
     if (id) this.onSelect(id);
   };
-  hint(id: string) { this.hinted = id; this.hintUntil = this.elapsed + 5; }
+  hint(id: string) { this.hinted = id; this.hintUntil = this.elapsed + 5; this.dirty = true; }
   animate(duration: number, update: Motion['update'], done?: () => void) {
-    this.motions.push({ elapsed: 0, duration: this.reduced ? Math.min(duration, .22) : duration, update, done });
+    const motion = { elapsed: 0, duration: this.reduced ? Math.min(duration, .22) : duration, update, done };
+    this.motions.push(motion); return motion;
   }
   follow(bus: Bus, points: Point[], done: () => void, reverseFirst = false) {
     this.trips.set(bus.id, { group: this.buses.get(bus.id)!.group, end: points.at(-1)!, done });
@@ -375,7 +446,7 @@ export class DepotScene {
     // Include the physical gap between meshes, while stopping short of the blocker.
     const travel = Math.max(0, distance - .025);
     let sparked = false;
-    this.animate(.52 + travel * .09, t => {
+    const motion = this.animate(.52 + travel * .09, t => {
       const impactT = .43;
       let move: number;
       if (t < impactT) move = ease(t / impactT) * travel;
@@ -390,8 +461,17 @@ export class DepotScene {
       const wobble = this.reduced ? 0 : Math.sin(t * 38) * .04 * Math.sin(t * Math.PI);
       group.rotation.z = wobble;
     }, () => {
-      group.position.copy(start); group.rotation.z = 0; this.bumping.delete(bus.id); done();
+      group.position.copy(start); group.rotation.z = 0; this.bumping.delete(bus.id); this.bumpMotions.delete(bus.id); done();
     });
+    this.bumpMotions.set(bus.id, motion);
+  }
+  cancelBump(bus: Bus) {
+    const motion = this.bumpMotions.get(bus.id);
+    if (!motion) return;
+    this.motions = this.motions.filter(item => item !== motion);
+    const group = this.buses.get(bus.id)!.group, start = yardPosition(bus, this.layout);
+    group.position.set(start.x, .08, start.z); group.rotation.z = 0;
+    this.bumping.delete(bus.id); this.bumpMotions.delete(bus.id);
   }
   departure(bus: Bus, done: () => void) {
     const group = this.buses.get(bus.id)!.group;
@@ -412,6 +492,7 @@ export class DepotScene {
     return v(side * (4.8 - bend) + (col - 2.5) * .4, this.layout.PLAZA_FRONT_Z - 2 - row * .34, .12);
   }
   syncPeople(initial = false) {
+    this.peopleMoving = true; this.dirty = true;
     const visible = new Set<number>();
     const add = (person: Person, target: THREE.Vector3) => {
       visible.add(person.id);
@@ -459,7 +540,7 @@ export class DepotScene {
   }
   project(position: THREE.Vector3) {
     const p = position.clone().project(this.camera);
-    return { x: (p.x + 1) * this.mount.clientWidth / 2, y: (-p.y + 1) * this.mount.clientHeight / 2 };
+    return { x: (p.x + 1) * this.viewWidth / 2, y: (-p.y + 1) * this.viewHeight / 2 };
   }
   busScreenPosition(id: string) {
     const bus = this.buses.get(id);
@@ -468,6 +549,12 @@ export class DepotScene {
   }
   update(dt: number) {
     this.elapsed += dt;
+    if (this.hinted && this.elapsed >= this.hintUntil) { this.hinted = null; this.dirty = true; }
+    if (this.hovered && this.state.buses.find(bus => bus.id === this.hovered)?.status !== 'yard') { this.hovered = null; this.dirty = true; }
+    // A settled puzzle needs no GPU work. Continue the clock and game logic,
+    // but let phones cool down between moves instead of redrawing the jam.
+    const pulsing = !this.reduced && (this.hovered || this.hinted || this.presses.size);
+    if (!this.dirty && !this.peopleMoving && !this.motions.length && !this.traffic.routes.size && !this.particles.length && !pulsing) return;
     const finished = this.traffic.update(dt, this.reduced);
     for (const route of this.traffic.routes.values()) {
       const group = this.trips.get(route.id)!.group;
@@ -490,10 +577,13 @@ export class DepotScene {
         motion.done?.();
       }
     }
+    this.peopleMoving = false;
     for (const visual of this.people.values()) {
       if (visual.boarding) continue;
-      const moving = visual.mesh.position.distanceTo(visual.target) > .025;
+      const moving = visual.mesh.position.distanceTo(visual.target) > .003;
+      this.peopleMoving ||= moving;
       visual.mesh.position.lerp(visual.target, 1 - Math.exp(-dt * 9));
+      if (!moving) visual.mesh.position.copy(visual.target);
       visual.mesh.position.y = visual.target.y + (moving && !this.reduced ? Math.abs(Math.sin(this.elapsed * 17 + visual.phase)) * .045 : 0);
       visual.mesh.rotation.z = moving && !this.reduced ? Math.sin(this.elapsed * 17 + visual.phase) * .06 : 0;
     }
@@ -515,9 +605,10 @@ export class DepotScene {
       p.mesh.rotation.x += dt * 4; p.mesh.rotation.z += dt * 5;
       p.mesh.scale.setScalar(p.life / p.max);
     }
+    const pressedIds = new Set([...this.presses.values()].map(press => press.id));
     for (const bus of this.state.buses) {
       const visual = this.buses.get(bus.id)!;
-      const highlighted = bus.status === 'yard' && (bus.id === this.hovered || (bus.id === this.hinted && this.elapsed < this.hintUntil));
+      const highlighted = bus.status === 'yard' && (pressedIds.has(bus.id) || bus.id === this.hovered || (bus.id === this.hinted && this.elapsed < this.hintUntil));
       visual.halo.visible = highlighted;
       if (highlighted) {
         visual.halo.position.copy(visual.group.position); visual.halo.position.y = .095;
@@ -534,5 +625,6 @@ export class DepotScene {
       }
     }
     this.renderer.render(this.scene, this.camera);
+    this.dirty = false;
   }
 }

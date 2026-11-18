@@ -6,11 +6,19 @@ export type Save = {
   sound: boolean; fast: boolean;
 };
 export function readSave(yard: YardSize = DEFAULT_YARD): (Save & { migrated?: boolean }) | null {
+  return decodeSave(readSaveText(), yard);
+}
+export function readSaveText(): string | null {
+  try { return localStorage.getItem(SAVE_KEY) || localStorage.getItem(LEGACY_SAVE_KEY); }
+  catch { return null; }
+}
+export function decodeSave(raw: string | null, yard: YardSize = DEFAULT_YARD): (Save & { migrated?: boolean }) | null {
   try {
-    const s = JSON.parse(localStorage.getItem(SAVE_KEY) || localStorage.getItem(LEGACY_SAVE_KEY) || 'null');
+    const s = JSON.parse(raw || 'null');
     if (!s || ![1, 2, 3, 4, 5, 6, 7].includes(s.version) || !Array.isArray(s.completed) ||
-      !s.completed.every((n: number) => Number.isInteger(n) && n > 0) || typeof s.sound !== 'boolean' ||
-      typeof s.fast !== 'boolean' || !s.best || typeof s.best !== 'object') return null;
+      !s.completed.every((n: number) => Number.isInteger(n) && n > 0 && n <= 9999) || typeof s.sound !== 'boolean' ||
+      typeof s.fast !== 'boolean' || !s.best || typeof s.best !== 'object' || Array.isArray(s.best) ||
+      !Object.entries(s.best).every(([level, moves]) => /^[1-9]\d{0,3}$/.test(level) && Number.isInteger(moves) && (moves as number) >= 0)) return null;
     if (s.version < 7) {
       const level = s.active?.level;
       if (!Number.isInteger(level) || level < 1 || level > 9999) return null;
