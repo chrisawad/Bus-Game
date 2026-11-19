@@ -148,19 +148,27 @@ test('vibrates on impact and sounds the full-stop cue only with sound enabled', 
   await expect.poll(() => page.evaluate(() => Reflect.get(window, '__pulses'))).toEqual([45]);
   const feedback = await page.evaluate(key => {
     const yard = [...document.querySelectorAll<HTMLButtonElement>('[data-status="yard"]')];
-    for (const bus of yard.slice(-5).reverse()) bus.click();
+    const [first, ...remaining] = yard.slice(-5).reverse();
+    const sound = document.querySelector<HTMLButtonElement>('#sound')!;
     const notes = Reflect.get(window, '__notes') as number[];
+    sound.click(); notes.length = 0;
+    first.click();
+    const successful = notes.slice(), toastHidden = document.querySelector<HTMLElement>('#status-strip')!.hidden;
+    sound.click(); notes.length = 0;
+    for (const bus of remaining) bus.click();
     const next = document.querySelector<HTMLButtonElement>('[data-status="yard"]')!;
     next.click();
     const muted = notes.slice();
-    document.querySelector<HTMLButtonElement>('#sound')!.click();
+    sound.click();
     notes.length = 0;
     next.click();
-    return { muted, enabled: notes.slice(), status: document.querySelector('#status')!.textContent,
+    return { successful, toastHidden, muted, enabled: notes.slice(), status: document.querySelector('#status')!.textContent,
       state: JSON.parse(localStorage.getItem(key)!).active };
   }, key);
   expect(feedback.muted).toEqual([]);
-  expect(feedback.enabled).toEqual([330, 220]);
+  expect(feedback.successful).toEqual([390]);
+  expect(feedback.toastHidden).toBe(true);
+  expect(feedback.enabled).toEqual([210]);
   expect(feedback.status).toContain('All five stops are full');
   expect(feedback.state.moves).toBe(5); expect(feedback.state.bumps).toBe(1);
 });

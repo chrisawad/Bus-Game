@@ -159,20 +159,28 @@ function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win' | 'full') {
   if (!progress.sound || !audioReady) return;
   try {
     const context = audioContext ??= new AudioContext();
-    if (context.state === 'suspended') void context.resume().catch(() => {});
-    const notes = { tap: [390], bump: [110], board: [640], depart: [440], win: [780], full: [330, 220] }[kind];
-    const now = context.currentTime;
-    notes.forEach((frequency, i) => {
-      const oscillator = context.createOscillator(), gain = context.createGain();
-      const start = now + i * .13, duration = kind === 'full' ? .1 : .18;
-      oscillator.type = kind === 'bump' || kind === 'full' ? 'triangle' : 'sine';
-      oscillator.frequency.setValueAtTime(frequency, start);
-      if (kind !== 'full') oscillator.frequency.exponentialRampToValueAtTime(kind === 'bump' ? 55 : frequency * 1.4, start + .12);
-      gain.gain.setValueAtTime(.001, start);
-      gain.gain.exponentialRampToValueAtTime(kind === 'board' ? .025 : .065, start + .005);
-      gain.gain.exponentialRampToValueAtTime(.001, start + duration);
-      oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(start + duration + .01);
-    });
+    void context.resume().catch(() => {});
+    const oscillator = context.createOscillator(), gain = context.createGain(), now = context.currentTime;
+    if (kind === 'full') {
+      oscillator.type = 'sawtooth';
+      oscillator.frequency.setValueAtTime(210, now);
+      const filter = context.createBiquadFilter();
+      filter.type = 'lowpass'; filter.frequency.value = 900; filter.Q.value = .7;
+      oscillator.connect(filter); filter.connect(gain);
+      gain.gain.setValueAtTime(.001, now);
+      gain.gain.linearRampToValueAtTime(.035, now + .012);
+      gain.gain.setValueAtTime(.035, now + .09);
+      gain.gain.exponentialRampToValueAtTime(.001, now + .16);
+      gain.connect(context.destination); oscillator.start(now); oscillator.stop(now + .17);
+      return;
+    }
+    oscillator.type = kind === 'bump' ? 'triangle' : 'sine';
+    const freq = { tap: 390, bump: 110, board: 640, depart: 440, win: 780 }[kind];
+    oscillator.frequency.setValueAtTime(freq, now);
+    oscillator.frequency.exponentialRampToValueAtTime(kind === 'bump' ? 55 : freq * 1.4, now + .12);
+    gain.gain.setValueAtTime(kind === 'board' ? .025 : .065, now);
+    gain.gain.exponentialRampToValueAtTime(.001, now + .18);
+    oscillator.connect(gain); gain.connect(context.destination); oscillator.start(now); oscillator.stop(now + .2);
   } catch { /* Play remains available without audio. */ }
 }
 function persist() {
