@@ -1,5 +1,5 @@
 import { rectangle, sweepDistance, type Polygon } from './geometry';
-import { BUS_SCALE, DEFAULT_YARD, MAX_YARD_SIDE, MAX_YARD_AREA, type YardSize } from './yard';
+import { BUS_SCALE, DEFAULT_YARD, MAX_YARD_SIDE, MAX_YARD_AREA, PARKING_CELL, type YardSize } from './yard';
 import { yieldToBrowser } from './scheduling';
 export { BUS_SCALE, DEFAULT_YARD, type YardSize } from './yard';
 
@@ -74,8 +74,37 @@ export function collisionFor(bus: Bus, buses: Bus[]): Collision | null {
 }
 
 const levelCache = new Map<string, GameState>();
+// An irregular arrangement can strand the last few parking spaces. On those
+// seeds, lay out a complete fleet in cells, working from the middle row out.
+// The outward vertical exit is always available as each new row is added.
+function packFleet(yard: YardSize, count: number, rng: () => number): Bus[] {
+  const columns = Math.floor(yard.width / PARKING_CELL), rows = Math.floor(yard.height / PARKING_CELL);
+  const dx = yard.width / columns, dy = yard.height / rows;
+  const cells = Array.from({ length: columns * rows }, (_, i) => ({
+    x: (i % columns + .5) * dx, y: (Math.floor(i / columns) + .5) * dy, order: rng(),
+  })).sort((a, b) => a.order - b.order).slice(0, count)
+    .sort((a, b) => Math.abs(a.y - yard.height / 2) - Math.abs(b.y - yard.height / 2));
+  const buses: Bus[] = [], directions = Object.keys(VECTOR) as Direction[], colors = Object.keys(PALETTE) as BusColor[];
+  for (const cell of cells) {
+    const start = Math.floor(rng() * directions.length);
+    const color = colors[Math.floor(rng() * colors.length)];
+    let parked = false;
+    for (const length of [2, 1.5]) {
+      for (let i = 0; i < directions.length; i++) {
+        const direction = directions[(start + i) % directions.length];
+        const bus: Bus = { id: 'bus-' + buses.length, x: cell.x, y: cell.y, length, direction, color,
+          capacity: length === 2 ? 12 : 8, filled: 0, status: 'yard', dock: null };
+        const shape = rectangle(bus, VECTOR[direction], (length + .02) * BUS_SCALE, 1.02 * BUS_SCALE);
+        if (shape.right - shape.left > dx - .025 || shape.bottom - shape.top > dy - .025 || collisionFor(bus, buses)) continue;
+        buses.push(bus); parked = true; break;
+      }
+      if (parked) break;
+    }
+  }
+  return buses;
+}
 function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Generator<void, GameState> {
-  const key = [level, yard.width, yard.height].join(':');
+  const key = [level, yard.width, yard.height, yard.busTarget].join(':');
   if (levelCache.has(key)) return fillCrowd(clone(levelCache.get(key)!), crowdSeed);
   const seed = 9217 + level * 7919;
   const rng = random(seed);
@@ -86,12 +115,15 @@ function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Gener
   // Grow a tightly packed, irregular jam from its center. Every new bus has
   // a clear forward exit at insertion, so reverse insertion is a solution.
   // Version-7 yards up to 200 square units retain their original seed layout.
-  const busLimit = 84 + Math.ceil(Math.max(0, yard.width * yard.height - 200) / 2);
+  const busLimit = yard.busTarget ?? (84 + Math.ceil(Math.max(0, yard.width * yard.height - 200) / 2));
+  const denseFleet = (yard.busTarget ?? 0) >= 60;
+  const longBusCount = denseFleet ? 20 : 38;
   for (let index = 0; index < busLimit; index++) {
     let best: { bus: Bus; shape: Polygon; score: number } | undefined;
-    for (let attempt = 0; attempt < 1400; attempt++) {
+    const attempts = denseFleet && index >= busLimit * .85 ? 4800 : 1400;
+    for (let attempt = 0; attempt < attempts; attempt++) {
       if (attempt % 32 === 0) yield;
-      const roll = rng(), length = index < 38 ? (roll < .08 ? 3 : 2) : (roll < .7 ? 1.5 : 2);
+      const roll = rng(), length = index < longBusCount ? (roll < .08 ? 3 : 2) : (roll < .7 ? 1.5 : 2);
       const bus: Bus = { id: 'bus-' + index, x: .55 + rng() * (yard.width - 1.1), y: .55 + rng() * (yard.height - 1.1), length,
         direction: directions[Math.floor(rng() * directions.length)], color: colors[Math.floor(rng() * colors.length)],
         capacity: length === 3 ? 24 : length === 2 ? 12 : 8, filled: 0, status: 'yard', dock: null };
@@ -109,6 +141,9 @@ function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Gener
     const body = busShape(best.bus);
     exposed = exposed.filter(other => sweepDistance(other.shape, body, other.forward) === null);
     exposed.push({ shape: body, forward: VECTOR[best.bus.direction] });
+  }
+  if (yard.busTarget && buses.length < yard.busTarget) {
+    buses.splice(0, buses.length, ...packFleet(yard, yard.busTarget, rng));
   }
   const state: GameState = {
     level, seed, crowdSeed, yard: { ...yard }, buses, lines: [[], []], queue: [], nextLine: 0, moves: 0, bumps: 0,
@@ -300,6 +335,10 @@ export function validState(input: unknown): input is GameState {
 
 export function validLevelMetadata(s: Pick<GameState, 'level' | 'yard'> | null | undefined): s is Pick<GameState, 'level' | 'yard'> {
   return !!s && Number.isInteger(s.level) && s.level >= 1 && s.level <= 9999 && !!s.yard &&
-    [s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n >= 6.5 && n <= MAX_YARD_SIDE && n * 2 === Math.round(n * 2)) &&
+    (s.yard.busTarget === undefined || (Number.isInteger(s.yard.busTarget) && s.yard.busTarget >= 1 && s.yard.busTarget <= 100 &&
+      s.yard.busTarget <= Math.floor(s.yard.width / PARKING_CELL) * Math.floor(s.yard.height / PARKING_CELL))) &&
+    s.yard.width >= (s.yard.busTarget ? 5.5 : 6.5) && s.yard.height >= (s.yard.busTarget ? 4.5 : 6.5) &&
+    [s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n <= MAX_YARD_SIDE &&
+      (s.yard.busTarget ? n === Math.round(n * 100) / 100 : n * 2 === Math.round(n * 2))) &&
     s.yard.width * s.yard.height <= MAX_YARD_AREA;
 }

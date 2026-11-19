@@ -1,9 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { Game, BUS_SCALE, DEFAULT_YARD, QUEUE_SIZE, STOP_COUNT, CROWD_BATCH_SIZE, makeLevel, collisionFor, bounds, busShape, validState, clone } from '../src/game';
-import { fitYard } from '../src/yard';
+import { fitYard, yardForLevel } from '../src/yard';
 import { polygonsOverlap } from '../src/geometry';
 
 describe('dense depot and group boarding', () => {
+  it('places the exact chosen fleet with a clear solution, including tightly packed layouts', () => {
+    const full = fitYard(382, 708);
+    for (const [level, yard] of [[1, yardForLevel(1, full)], [2, yardForLevel(2, full)],
+      [8, yardForLevel(8, full)], [50, yardForLevel(50, full)], [3, { width: 6, height: 6, busTarget: 16 }]] as const) {
+      const state = makeLevel(level, yard, 123);
+      expect(state.buses).toHaveLength(yard.busTarget!);
+      expect(validState(state)).toBe(true);
+      for (const bus of [...state.buses].reverse()) {
+        expect(collisionFor(bus, state.buses)).toBeNull();
+        bus.status = 'gone';
+      }
+    }
+  }, 30_000);
   it('fills the smaller 24-person middle from alternating shuffled lines', () => {
     const state = makeLevel(1);
     expect(state.queue).toHaveLength(QUEUE_SIZE);

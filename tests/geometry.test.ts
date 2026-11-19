@@ -1,10 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { Game, DEFAULT_YARD, BUS_SCALE, VECTOR, busShape, collisionFor, type Bus, type Direction } from '../src/game';
 import { polygonsOverlap } from '../src/geometry';
-import { createDepotLayout, fitYard, YARD_RIM } from '../src/yard';
+import { createDepotLayout, fitYard, yardForLevel, YARD_RIM } from '../src/yard';
 import { yardExit, yardPosition, trafficOverlaps, BAY_WIDTH, BAY_LENGTH, DOCK_X, DOCK_Z, YARD_TOP, ROAD_X, ROAD_TOP, ROAD_BOTTOM } from '../src/traffic';
 
 describe('angled bus geometry', () => {
+  it('enlarges the opening fleet and increases its count until the tagged size is reached', () => {
+    for (const [width, height] of [[382, 708], [312, 465], [1432, 864], [836, 265]]) {
+      const available = fitYard(width, height), original = createDepotLayout(available);
+      const floor = Math.min(width / original.frameWidth, height / original.frameHeight);
+      let previousCount = 0, previousScale = Infinity;
+      for (let level = 1; level <= 22; level++) {
+        const yard = yardForLevel(level, available), layout = createDepotLayout(yard);
+        const scale = Math.min(width / layout.frameWidth, height / layout.frameHeight);
+        if (level === 1) {
+          expect(yard.busTarget).toBe(20);
+          expect(scale).toBeGreaterThan(floor * 1.1);
+        }
+        expect(yard.busTarget).toBeGreaterThanOrEqual(previousCount);
+        expect(scale).toBeGreaterThanOrEqual(floor - 1e-6);
+        expect(scale).toBeLessThanOrEqual(previousScale);
+        if (previousCount && yard.busTarget! > previousCount) expect(scale).toBeLessThan(previousScale);
+        previousCount = yard.busTarget!; previousScale = scale;
+      }
+      expect(previousScale).toBeCloseTo(floor, 6);
+    }
+  });
   it('uses one bus lane on all four sides and puts the recovered space into parking', () => {
     for (const [width, height] of [[382, 708], [440, 800], [1432, 864]]) {
       const yard = fitYard(width, height), layout = createDepotLayout(yard);

@@ -1,5 +1,8 @@
-export type YardSize = { width: number; height: number };
+// Routes saved before progression have no target and keep their original layout.
+export type YardSize = { width: number; height: number; busTarget?: number };
 export const BUS_SCALE = .78;
+// A short bus fits in this square at any of the eight headings, including its parking gap.
+export const PARKING_CELL = 1.44;
 export const DEFAULT_YARD: YardSize = { width: 10, height: 15 };
 export const MAX_YARD_SIDE = 32, MAX_YARD_AREA = 320;
 
@@ -15,6 +18,7 @@ export const BAY_LENGTH = MAX_BUS_LENGTH + .2;
 const PLAZA_DEPTH = 4.4, PLINTH_EDGE = .3;
 const EXTRA_WIDTH = 2 * (ROAD_CLEARANCE + ROAD_SHOULDER + PLINTH_EDGE);
 const PLAZA_WIDTH = 14.2; // Includes the lamps at either end of the stops.
+const COMPACT_PLAZA_WIDTH = 9.4; // Fits the five stops when the side planters are absent.
 
 export const CAMERA_RISE = 30, CAMERA_RUN = 24.2;
 const GROUND_PROJECTION = CAMERA_RISE / Math.hypot(CAMERA_RISE, CAMERA_RUN);
@@ -35,10 +39,43 @@ export function createDepotLayout(yard: YardSize) {
   const WORLD_NORTH_Z = PLAZA_FRONT_Z - PLAZA_DEPTH;
   const WORLD_SOUTH_Z = ROAD_SOUTH_Z + .1;
   const WORLD_CENTER_Z = (WORLD_NORTH_Z + WORLD_SOUTH_Z) / 2;
-  const frameWidth = Math.max(PLAZA_WIDTH, ROAD_WIDTH + 2 * PLINTH_EDGE);
+  const frameWidth = Math.max(yard.busTarget ? COMPACT_PLAZA_WIDTH : PLAZA_WIDTH, ROAD_WIDTH + 2 * PLINTH_EDGE);
+  const plazaWidthRatio = Math.min(1, frameWidth / PLAZA_WIDTH);
   const frameHeight = (WORLD_SOUTH_Z - WORLD_NORTH_Z) * GROUND_PROJECTION + NORTH_OVERHANG + SOUTH_OVERHANG;
   return { yard, ROAD_X, ROAD_TOP, ROAD_BOTTOM, DOCK_Z, PLAZA_FRONT_Z, ROAD_WIDTH,
-    ROAD_NORTH_Z, ROAD_SOUTH_Z, WORLD_NORTH_Z, WORLD_SOUTH_Z, WORLD_CENTER_Z, frameWidth, frameHeight };
+    ROAD_NORTH_Z, ROAD_SOUTH_Z, WORLD_NORTH_Z, WORLD_SOUTH_Z, WORLD_CENTER_Z, frameWidth, frameHeight, plazaWidthRatio };
+}
+
+// The camera fits the whole depot. Fit a smaller depot for small fleets so the
+// same world units enlarge buses, people, hit targets and collision geometry together.
+export function yardForLevel(level: number, available: YardSize): YardSize {
+  const parkingCells = Math.floor(available.width / PARKING_CELL) * Math.floor(available.height / PARKING_CELL);
+  const fullArea = available.width * available.height;
+  const capacity = Math.min(100, parkingCells, 5 * Math.round(fullArea * .43 / 5));
+  const busTarget = Math.min(capacity, 20 + (level - 1) * 5);
+  if (busTarget === capacity) return { ...available, busTarget };
+  const frame = createDepotLayout(available);
+  const fixedHeight = frame.frameHeight - available.height * GROUND_PROJECTION;
+  const smallestFrame = Math.max(COMPACT_PLAZA_WIDTH / frame.frameWidth,
+    (fixedHeight + 4.5 * GROUND_PROJECTION) / frame.frameHeight);
+  const progress = (busTarget - 20) / (capacity - 20);
+  let low = smallestFrame + (1 - smallestFrame) * progress, high = 1;
+  const area = fullArea * (busTarget / capacity) ** .72;
+  // Find the smallest frame with enough parking area after the fixed-width
+  // road, stops and terminal have taken their share in both directions.
+  for (let i = 0; i < 16; i++) {
+    const f = (low + high) / 2;
+    const w = frame.frameWidth * f - EXTRA_WIDTH;
+    const h = (frame.frameHeight * f - fixedHeight) / GROUND_PROJECTION;
+    const cells = Math.floor(w / PARKING_CELL) * Math.floor(h / PARKING_CELL);
+    if (w * h < area || cells < busTarget) low = f; else high = f;
+  }
+  const hundredth = (value: number) => Math.round(value * 100) / 100;
+  return {
+    width: Math.min(available.width, Math.max(5.5, hundredth(frame.frameWidth * high - EXTRA_WIDTH))),
+    height: Math.min(available.height, Math.max(4.5, hundredth((frame.frameHeight * high - fixedHeight) / GROUND_PROJECTION))),
+    busTarget,
+  };
 }
 
 // Fit new routes to the space between the controls. Existing routes keep their

@@ -77,7 +77,7 @@ test('keeps play available when Worker and Scheduler APIs are unavailable', asyn
 
 test('recovers when the worker asset cannot load', async ({ page, context }) => {
   await context.route('**/level.worker-*.js', route => route.abort());
-  await open(page); expect((await read(page)).buses.length).toBeGreaterThan(40);
+  await open(page); expect((await read(page)).buses).toHaveLength(20);
   await expect(page.locator('#route-loading')).toBeHidden();
 });
 
@@ -232,17 +232,26 @@ test('undo during group boarding preserves passengers and cancels stale animatio
   await open(page);
   await page.evaluate(() => document.querySelector<HTMLButtonElement>('[data-clear="true"][data-matches="true"][data-status="yard"]')!.click());
   await page.waitForFunction(() => document.querySelector<HTMLElement>('#scene')!.dataset.boarding === 'true');
-  const { before, after } = await page.evaluate(async key => {
+  const { before, after, boarding } = await page.evaluate(async key => {
     const before = JSON.parse(localStorage.getItem(key)!).active;
     document.querySelector<HTMLButtonElement>('[data-clear="true"][data-status="yard"]')!.click();
+    const scene = document.querySelector<HTMLElement>('#scene')!;
+    // Capture the undo commit before the next frame legitimately boards another group.
+    const committed = new Promise<void>(resolve => {
+      const observer = new MutationObserver(() => {
+        if (JSON.parse(localStorage.getItem(key)!).active.moves !== before.moves) return;
+        observer.disconnect(); resolve();
+      });
+      observer.observe(scene, { attributes: true, attributeFilter: ['data-boarding'] });
+    });
     document.querySelector<HTMLButtonElement>('#undo')!.click();
-    while (JSON.parse(localStorage.getItem(key)!).active.moves !== before.moves) await new Promise(resolve => setTimeout(resolve, 0));
-    return { before, after: JSON.parse(localStorage.getItem(key)!).active };
+    await committed;
+    return { before, after: JSON.parse(localStorage.getItem(key)!).active, boarding: scene.dataset.boarding };
   }, key);
   expect(before.boarded).toBeGreaterThan(0);
   expect(validState(after)).toBe(true);
   expect(after).toEqual(new Game(after.level, before).state);
-  await expect(page.locator('#scene')).toHaveAttribute('data-boarding', 'false');
+  expect(boarding).toBe('false');
   await page.locator('#undo').click(); await expect(page.locator('#undo')).toBeDisabled();
   expect((await read(page)).boarded).toBe(0);
 });

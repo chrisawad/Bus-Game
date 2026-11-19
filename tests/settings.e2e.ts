@@ -4,6 +4,32 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('bus-jam-install-dismissed', '1'));
 });
 
+test('changes levels from the badge or Settings and restores a parked route', async ({ page }) => {
+  const active = () => page.evaluate(key => JSON.parse(localStorage.getItem(key)!).active, key);
+  await page.goto('./');
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  await page.locator('[data-clear="true"][data-status="yard"]').last().evaluate(button => (button as HTMLButtonElement).click());
+  const original = await active();
+  await page.locator('#level-badge').click();
+  const field = page.getByLabel('Level number'), play = page.getByRole('button', { name: 'Play level', exact: true });
+  await expect(field).toBeFocused();
+  await field.fill('10000'); await play.click();
+  expect(await field.evaluate(node => (node as HTMLInputElement).validity.rangeOverflow)).toBe(true);
+  await field.fill('5'); await field.press('Enter');
+  await expect(page.locator('#level-badge')).toHaveText('05');
+  expect((await active()).buses).toHaveLength(40);
+  await page.reload();
+  await expect(page.locator('#level-badge')).toHaveText('05');
+  await page.locator('#settings').click(); await page.locator('#choose-level').click();
+  await expect(field).toHaveValue('5');
+  await field.fill('1'); await play.click();
+  await expect(page.locator('#level-badge')).toHaveText('01');
+  const restored = await active();
+  expect(restored.moves).toBe(1); expect(restored.crowdSeed).toBe(original.crowdSeed);
+  await page.locator('#level-badge').press('Enter'); await page.keyboard.press('Escape');
+  await expect(page.locator('#level-badge')).toBeFocused();
+});
+
 test('floating settings support keyboard dismissal, saved preferences, and help', async ({ page }, info) => {
   await page.goto('./'); await expect(page.locator('#scene canvas')).toBeVisible();
   const trigger = page.getByRole('button', { name: 'Settings', exact: true });

@@ -49,7 +49,8 @@ test('shows the warm depot, short feeder queues, and real diagonal buses', async
   const actions = await page.locator('.header-actions').boundingBox();
   expect(counter!.x + counter!.width).toBeLessThan(actions!.x);
   expect(save.active.queue).toHaveLength(24);
-  expect(save.active.totalPassengers).toBeGreaterThan(250);
+  expect(save.active.buses).toHaveLength(20);
+  expect(save.active.totalPassengers).toBe(save.active.buses.reduce((sum: number, b: { capacity: number }) => sum + b.capacity, 0));
   const buses = save.active.buses as { id: string; x: number; y: number; length: number; direction: string }[];
   expect(buses.filter(b => b.direction.length === 2).length).toBeGreaterThanOrEqual(5);
   await page.screenshot({ path: 'test-results/' + info.project.name + '-depot.png', fullPage: true });
@@ -221,7 +222,7 @@ test('clears the full dense level with concurrent traffic, then advances and res
         .every((b: { status: string }) => b.status === 'gone'), { timeout: 60_000 }).toBe(true);
     }
   }
-  await expect(page.locator('#dialog-title')).toContainText('good route', { timeout: 60_000 });
+  await expect(page.locator('#dialog-title')).toHaveText('You win!', { timeout: 60_000 });
   const finished = await read(page);
   await expect(page.locator('.win-stats > span').last()).toHaveText('1bump');
   expect(finished.active.buses.every((b: { status: string }) => b.status === 'gone')).toBe(true);
@@ -229,6 +230,7 @@ test('clears the full dense level with concurrent traffic, then advances and res
   await page.screenshot({ path: 'test-results/' + info.project.name + '-won.png', fullPage: true });
   await page.locator('[data-action="next"]').click();
   await expect(page.locator('#level-badge')).toHaveText('02');
+  expect((await read(page)).active.buses).toHaveLength(25);
   await page.reload(); await expect(page.locator('#level-badge')).toHaveText('02');
   expect((await read(page)).completed).toContain(1);
 });

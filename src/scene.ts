@@ -270,7 +270,8 @@ export class DepotScene {
       box(world, .2, .09, .075, '#fff8df', x + .72, .86, this.layout.DOCK_Z - .75, .018);
     });
     const plaza = new THREE.Group(); plaza.position.z = this.layout.PLAZA_FRONT_Z; world.add(plaza);
-    box(plaza, Math.min(this.layout.frameWidth - .6, 14.4), .11, 4.3, '#f3edda', 0, .015, -2.15, .45);
+    plaza.scale.x = this.layout.plazaWidthRatio;
+    box(plaza, Math.min((this.layout.frameWidth - .6) / plaza.scale.x, 14.4), .11, 4.3, '#f3edda', 0, .015, -2.15, .45);
     box(plaza, 4.9, .014, 1.25, '#e8e1c9', 0, .085, -.95, .3);
     for (const side of [-1, 1]) {
       rail(plaza, [v(side * 6.25, -3.9, .25), v(side * 6.15, -2.4, .25), v(side * 5.7, -1.65, .25), v(side * 3.5, -1.1, .25)]);
@@ -280,11 +281,13 @@ export class DepotScene {
     }
     rail(plaza, [v(-2.4, -1.5, .23), v(-2.5, -.6, .23), v(-2.1, -.2, .23), v(2.2, -.2, .23)]);
     rail(plaza, [v(2.4, -1.5, .23), v(2.5, -.6, .23), v(2.2, -.2, .23)]);
-    for (const x of [-5.5, 5.5]) {
-      box(world, 1.6, .025, 2.3, '#d9e8d9', x, .07, this.layout.DOCK_Z, .25);
-      for (const offset of [-.55, .55]) this.planter(x, this.layout.DOCK_Z + offset);
+    if (this.layout.frameWidth >= 14) {
+      for (const x of [-5.5, 5.5]) {
+        box(world, 1.6, .025, 2.3, '#d9e8d9', x, .07, this.layout.DOCK_Z, .25);
+        for (const offset of [-.55, .55]) this.planter(x, this.layout.DOCK_Z + offset);
+      }
+      for (const x of [-6.55, 6.55]) this.lamp(x, this.layout.DOCK_Z);
     }
-    for (const x of [-6.55, 6.55]) this.lamp(x, this.layout.DOCK_Z);
     for (const x of [-1.1, 1.1]) box(plaza, .07, 1.35, .07, '#87a28d', x, .7, -3.7, .02);
     box(plaza, 2.85, .13, .85, '#82a797', 0, 1.44, -3.7, .15);
     box(plaza, 1.9, .07, .36, '#b59879', 0, .41, -3.6, .04);
@@ -306,7 +309,8 @@ export class DepotScene {
     box(this.world, .25, .08, .2, '#fff5ce', x + .39, 1.55, z, .025);
   }
   async reset(state: GameState) {
-    const changed = state.yard.width !== this.layout.yard.width || state.yard.height !== this.layout.yard.height;
+    const changed = state.yard.width !== this.layout.yard.width || state.yard.height !== this.layout.yard.height ||
+      state.yard.busTarget !== this.layout.yard.busTarget;
     if (changed) {
       releaseBus(this.world); this.world.clear();
       this.layout = createDepotLayout(state.yard); this.traffic = new Traffic(this.layout);
@@ -501,13 +505,19 @@ export class DepotScene {
     this.follow(bus, points, () => { group.visible = false; done(); }, true);
   }
   queuePosition(index: number) {
-    const row = Math.floor(index / 8), column = index % 8;
-    return v((row % 2 === 0 ? 3.5 - column : column - 3.5) * .5, this.layout.PLAZA_FRONT_Z - .55 - row * .34, .12);
+    const columns = 2 * Math.round(4 * this.layout.plazaWidthRatio);
+    const row = Math.floor(index / columns), column = index % columns;
+    const x = (column - (columns - 1) / 2) * (row % 2 ? 1 : -1);
+    return v(x * .5, this.layout.PLAZA_FRONT_Z - .55 - row * .34, .12);
   }
   linePosition(lane: number, index: number, served: number) {
-    const col = (index + served) % 6, row = Math.floor(index / 6), side = lane === 0 ? -1 : 1;
-    const bend = Math.pow(Math.max(0, 1 - row / 5), 2) * .2;
-    return v(side * (4.8 - bend) + (col - 2.5) * .4, this.layout.PLAZA_FRONT_Z - 2 - row * .34, .12);
+    const columns = Math.round(6 * this.layout.plazaWidthRatio);
+    const rows = Math.ceil(VISIBLE_PER_LINE / columns);
+    const col = (index + served) % columns, row = Math.floor(index / columns), side = lane === 0 ? -1 : 1;
+    const bend = (1 - row / (rows - 1)) ** 2 * .2;
+    const centerX = side * (4.8 - bend) * this.layout.plazaWidthRatio;
+    const front = Math.min(2, 4.05 - (rows - 1) * .34);
+    return v(centerX + (col - (columns - 1) / 2) * .4, this.layout.PLAZA_FRONT_Z - front - row * .34, .12);
   }
   syncPeople(initial = false) {
     this.peopleMoving = true; this.dirty = true;
@@ -570,9 +580,6 @@ export class DepotScene {
       const life = .45 + Math.random() * .35;
       this.particles.push({ mesh, velocity: new THREE.Vector3((Math.random() - .5) * 3, 1.2 + Math.random() * 2, (Math.random() - .5) * 3), life, max: life });
     }
-  }
-  celebrate() {
-    for (const color of Object.values(PALETTE)) this.burst(v((Math.random() - .5) * 7, 1, 3), color.hex, 25);
   }
   project(position: THREE.Vector3) {
     const p = position.clone().project(this.camera);

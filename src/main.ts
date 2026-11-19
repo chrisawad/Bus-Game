@@ -2,7 +2,9 @@ import './style.css';
 import { registerSW } from 'virtual:pwa-register';
 import { Game, PALETTE, collisionFor, type Bus } from './game';
 import { DepotScene } from './scene';
-import { readSaveText, writeSave, type Save } from './storage';
+import { parkRoute, readParkedRoute, readSaveText, writeSave, type Save } from './storage';
+import { createWinCelebration } from './celebration';
+import { createWinAudio } from './win-audio';
 import { fitYard } from './yard';
 import { setupSettings } from './settings';
 import { setupInstall, installInstructions } from './install';
@@ -22,7 +24,6 @@ const icons: Record<string, string> = {
   leaf: '<path d="M20 4C10 2 3 7 5 14s12 8 15-10ZM5 20 16 9"/>',
   people: '<circle cx="9" cy="7" r="3"/><path d="M3 20v-2a6 6 0 0 1 12 0v2m0-16a3 3 0 0 1 0 6m3 4a5 5 0 0 1 3 4v2"/>',
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
-  trophy: '<path d="M8 3h8v6a4 4 0 0 1-8 0V3Zm4 10v5m-4 3h8M8 5H4v2a5 5 0 0 0 5 5m7-7h4v2a5 5 0 0 1-5 5"/>',
   cloud: '<path d="M7 18a5 5 0 1 1 0-10 7 7 0 0 1 13 2 4 4 0 0 1-1 8M9 16l2 2 4-4"/>',
   download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/>',
   speed: '<path d="m3 5 9 7-9 7V5Zm10 0 9 7-9 7V5Z"/>',
@@ -50,7 +51,7 @@ let graphicsFailed = false;
 let yardKey = '';
 const clearExits = new Map<string, boolean>();
 let boardingInProgress = false, boardingClock = 0, lastPhase = '';
-let modal: 'help' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | null = null;
+let modal: 'help' | 'level' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | null = null;
 let messageTimer: ReturnType<typeof setTimeout>;
 let audioContext: AudioContext | undefined;
 let audioReady = false;
@@ -73,7 +74,7 @@ el('#app').innerHTML = `
   <main class="game-layout">
     <section class="play-column" aria-label="Bus puzzle">
       <div class="level-header flex items-center justify-between">
-        <div class="flex items-center gap-3"><span class="level-badge" id="level-badge">01</span>
+        <div class="flex items-center gap-3"><button class="level-badge" id="level-badge" type="button" aria-label="Change level" aria-haspopup="dialog" title="Change level">01</button>
           <div><div class="eyebrow level-eyebrow">LEVEL</div><h1 id="level-name"></h1></div>
         </div>
         <div class="level-stats flex items-center">
@@ -109,6 +110,8 @@ el('#app').innerHTML = `
     <div class="settings-options">
       <button class="setting-row" id="sound" type="button" aria-label="Sound" aria-pressed="false" autofocus><span class="setting-icon">${icon('mute')}</span><span>Sound</span><span class="setting-value" id="sound-value">Off</span></button>
       <button class="setting-row" id="speed" type="button" aria-label="Double speed" aria-pressed="false"><span class="setting-icon">${icon('speed')}</span><span>Double speed</span><span class="setting-value" id="speed-value">1×</span></button>
+      <button class="setting-row" id="win-voice" type="button" aria-label="You win voice" aria-pressed="false"><span class="setting-icon">${icon('sound')}</span><span>“You win!” voice</span><span class="setting-value" id="voice-value">Off</span></button>
+      <button class="setting-row" id="choose-level" type="button" aria-haspopup="dialog"><span class="setting-icon">${icon('bus')}</span><span>Change level</span>${icon('arrow')}</button>
       <button class="setting-row" id="help" type="button"><span class="setting-icon">${icon('help')}</span><span>How to play</span>${icon('arrow')}</button>
       <button class="setting-row" id="update" type="button" hidden><span class="setting-icon">${icon('reset')}</span><span>Update available</span>${icon('arrow')}</button>
       <details class="keyboard-panel" id="keyboard-panel">
@@ -118,7 +121,7 @@ el('#app').innerHTML = `
     </div>
     <p class="settings-saved" id="save-state">${icon('check')} Progress saved</p>
   </section>
-  <dialog id="dialog" aria-labelledby="dialog-title"><button class="dialog-close icon-button" id="dialog-close" type="button" aria-label="Close dialog">${icon('close')}</button><div id="dialog-content"></div></dialog>
+  <dialog id="dialog" aria-labelledby="dialog-title"><canvas id="win-confetti" aria-hidden="true" hidden></canvas><button class="dialog-close icon-button" id="dialog-close" type="button" aria-label="Close dialog">${icon('close')}</button><div id="dialog-content"></div></dialog>
   <div class="route-loading" id="route-loading" role="status" aria-live="polite"><div class="route-loading-card"><span class="loading-bus">${icon('bus')}</span><strong id="loading-title">Opening the depot…</strong><span id="loading-detail">Getting your buses and passengers ready.</span><span class="loading-track" aria-hidden="true"></span><button class="dialog-primary" id="loading-reload" type="button" hidden>Reload game ${icon('reset')}</button></div></div>
 </div>`;
 // Some installed Android browsers report a layout viewport taller than the
@@ -135,6 +138,12 @@ window.addEventListener('resize', fitVisibleViewport);
 window.addEventListener('pageshow', fitVisibleViewport);
 
 const settings = setupSettings(el<HTMLButtonElement>('#settings'), el('#settings-panel'), el<HTMLButtonElement>('#settings-close'));
+const confettiCanvas = el<HTMLCanvasElement>('#win-confetti');
+const celebration = createWinCelebration(confettiCanvas);
+const winAudio = createWinAudio();
+function stopCelebration() {
+  celebration.stop(); winAudio.stop(); confettiCanvas.hidden = true;
+}
 function setLoading(active: boolean, title = 'Opening the depot…', detail = 'Getting your buses and passengers ready.') {
   if (graphicsFailed && !active) return;
   transitioning = active;
@@ -160,6 +169,10 @@ function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win' | 'full') {
   try {
     const context = audioContext ??= new AudioContext();
     void context.resume().catch(() => {});
+    if (kind === 'win') {
+      void winAudio.play(context, progress.winVoice === true).catch(() => {});
+      return;
+    }
     const now = context.currentTime;
     if (kind === 'full') {
       const notes = [
@@ -182,7 +195,7 @@ function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win' | 'full') {
     }
     const oscillator = context.createOscillator(), gain = context.createGain();
     oscillator.type = kind === 'bump' ? 'triangle' : 'sine';
-    const freq = { tap: 390, bump: 110, board: 640, depart: 440, win: 780 }[kind];
+    const freq = { tap: 390, bump: 110, board: 640, depart: 440 }[kind];
     oscillator.frequency.setValueAtTime(freq, now);
     oscillator.frequency.exponentialRampToValueAtTime(kind === 'bump' ? 55 : freq * 1.4, now + .12);
     gain.gain.setValueAtTime(kind === 'board' ? .025 : .065, now);
@@ -211,10 +224,12 @@ function updateControls() {
   el('#sound .setting-icon').innerHTML = icon(progress.sound ? 'sound' : 'mute');
   el('#sound-value').textContent = progress.sound ? 'On' : 'Off';
   el('#sound').setAttribute('aria-pressed', String(progress.sound));
+  el('#win-voice').setAttribute('aria-pressed', String(progress.winVoice === true));
+  el('#voice-value').textContent = progress.winVoice ? 'On' : 'Off';
   el('#speed-value').textContent = progress.fast ? '2×' : '1×';
   el('#speed').setAttribute('aria-pressed', String(progress.fast));
 }
-function sync() {
+function sync(celebrateWin = false) {
   scene.state = game.state; scene.dirty = true;
   const s = game.state;
   el('#scene').dataset.boarding = String(boardingInProgress);
@@ -260,7 +275,10 @@ function sync() {
     if (s.phase === 'won') {
       if (!progress.completed.includes(s.level)) progress.completed.push(s.level);
       progress.best[s.level] = Math.min(progress.best[s.level] ?? Infinity, s.moves);
-      persist(); tone('win'); scene.celebrate(); showDialog('won');
+      persist(); showDialog('won');
+      if (celebrateWin) {
+        confettiCanvas.hidden = false; celebration.play(); tone('win');
+      }
     } else if (s.phase === 'jammed') showDialog('jammed');
   }
 }
@@ -298,13 +316,17 @@ async function doUndo() {
     await scene.reset(game.state); sync(); say('A little rewind. Try a different bus.');
   } finally { clearTimeout(notice); setLoading(false); }
 }
-async function restart(level = game.state.level) {
+async function restart(level = game.state.level, switchLevel = false, yardBeforeKeyboard?: ReturnType<typeof currentYard>) {
   if (!ready || transitioning) return;
+  if (switchLevel && level === game.state.level) { closeDialog(); return; }
+  if (level !== game.state.level) parkRoute({ ...progress, active: game.state });
   closeDialog(); boardingInProgress = false; boardingClock = 0; lastPhase = '';
   settings.close(); setLoading(true, 'Making room for a fresh start…', 'Arranging the jam and shuffling both queues.');
   try {
     await afterPaint();
-    const { state } = await prepareLevel({ type: 'level', level, yard: currentYard(), crowdSeed: newCrowdSeed() });
+    const options = { level, yard: yardBeforeKeyboard ?? currentYard(), crowdSeed: newCrowdSeed() };
+    const { state } = await prepareLevel(switchLevel || level !== game.state.level
+      ? { ...options, type: 'load', raw: readParkedRoute(level) } : { ...options, type: 'level' });
     game = new Game(level, state); await scene.reset(game.state); el('#bus-controls').innerHTML = '';
     sync(); scene.update(0); await afterPaint(); say('A fresh start. Find a bus with a clear exit.');
   } catch (error) {
@@ -315,10 +337,21 @@ async function restart(level = game.state.level) {
 function showDialog(kind: NonNullable<typeof modal>) {
   settings.close();
   const dialog = el<HTMLDialogElement>('#dialog');
-  if (dialog.open) dialog.close();
+  if (dialog.open) closeDialog();
   modal = kind;
   const content = el('#dialog-content'); el('#dialog-close').hidden = kind === 'jammed' || kind === 'won';
-  if (kind === 'help') {
+  if (kind === 'level') {
+    // Measure the play area before focusing the number field opens a phone keyboard.
+    const yard = currentYard(), boardWidth = el('#scene').clientWidth;
+    content.innerHTML = '<h2 id="dialog-title">Change level</h2><form id="level-form">' +
+      '<label for="level-number">Level number</label><input id="level-number" name="level" type="number" inputmode="numeric" min="1" max="9999" step="1" required autofocus>' +
+      '<button type="submit" class="dialog-primary">Play level</button>' +
+      '<button type="button" class="dialog-secondary" data-action="close">Cancel</button></form>';
+    const input = el<HTMLInputElement>('#level-number'); input.valueAsNumber = game.state.level;
+    el('#level-form').addEventListener('submit', event => {
+      event.preventDefault(); void restart(input.valueAsNumber, true, boardWidth === el('#scene').clientWidth ? yard : undefined);
+    });
+  } else if (kind === 'help') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('bus') + '</div><div class="eyebrow">WELCOME TO THE DEPOT</div><h2 id="dialog-title">A busload of possibility.</h2>' +
       '<p>Clear every bus to finish your route. Here’s how:</p><ol class="help-rules">' +
       '<li><strong>Follow the arrow.</strong> Tap a bus to drive forward. If another bus blocks it, it bumps and returns to its spot.</li>' +
@@ -349,11 +382,12 @@ function showDialog(kind: NonNullable<typeof modal>) {
       '<button class="dialog-primary" data-action="update" autofocus>Update now ' + icon('reset') + '</button>' +
       '<button class="dialog-secondary" data-action="close">Later</button>';
   } else {
-    content.innerHTML = '<div class="dialog-emblem trophy">' + icon('trophy') + '</div><div class="eyebrow">EVERYONE MADE IT HOME</div><h2 id="dialog-title">Now that’s a good route.</h2>' +
-      '<p>Every bus is gone. Every little person is on their way. Take a moment—you’ve earned it.</p>' +
+    content.innerHTML = '<div class="win-mark" aria-hidden="true"><svg viewBox="0 0 80 80" width="80" height="80"><path d="M23 15H12v10c0 11 8 17 18 17m27-27h11v10c0 11-8 17-18 17" fill="none" stroke="#d99b24" stroke-width="6" stroke-linecap="round"/><path d="M23 10h34v23c0 12-8 21-17 21s-17-9-17-21Z" fill="#ffcf48" stroke="#dda227" stroke-width="3"/><path d="M40 54v12m-13 4h26" fill="none" stroke="#d99b24" stroke-width="7" stroke-linecap="round"/><path d="m40 19 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1Z" fill="#fff6c2"/></svg></div>' +
+      '<div class="eyebrow">Level ' + game.state.level + ' complete</div><h2 id="dialog-title">You win!</h2>' +
       '<div class="win-stats"><span><strong>' + game.state.buses.length + '</strong>buses cleared</span><span><strong>' + game.state.boarded +
       '</strong>happy passengers</span><span><strong>' + game.state.bumps + '</strong>' + (game.state.bumps === 1 ? 'bump' : 'bumps') + '</span></div>' +
-      '<button class="dialog-primary" data-action="next">On to route ' + (game.state.level + 1) + ' ' + icon('arrow') + '</button><button class="dialog-secondary" data-action="restart">Play this one again</button>';
+      (game.state.level < 9999 ? '<button class="dialog-primary" data-action="next" autofocus>On to route ' + (game.state.level + 1) + ' ' + icon('arrow') + '</button>' : '') +
+      '<button class="dialog-secondary" data-action="restart">Play this one again</button>';
   }
   content.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.action;
@@ -369,13 +403,14 @@ function showDialog(kind: NonNullable<typeof modal>) {
   }));
   dialog.showModal();
 }
-function closeDialog() { el<HTMLDialogElement>('#dialog').close(); modal = null; }
-el('#dialog').addEventListener('close', () => { if (!el<HTMLDialogElement>('#dialog').open) modal = null; });
+function closeDialog() { stopCelebration(); el<HTMLDialogElement>('#dialog').close(); modal = null; }
+el('#dialog').addEventListener('close', () => { if (!el<HTMLDialogElement>('#dialog').open) { stopCelebration(); modal = null; } });
 el('#dialog-close').addEventListener('click', closeDialog);
 el<HTMLDialogElement>('#dialog').addEventListener('cancel', event => {
   if (modal === 'jammed' || modal === 'won') event.preventDefault(); else modal = null;
 });
 el('#help').addEventListener('click', () => showDialog('help')); el('#retry').addEventListener('click', () => showDialog('retry'));
+for (const id of ['#level-badge', '#choose-level']) el(id).addEventListener('click', () => showDialog('level'));
 el('#undo').addEventListener('click', doUndo);
 el('#hint').addEventListener('click', () => {
   const bus = game.hint();
@@ -387,6 +422,7 @@ el('#hint').addEventListener('click', () => {
   } else say('Let the stops empty, or undo a dispatch to make room.', true);
 });
 el('#sound').addEventListener('click', () => { audioReady = true; progress.sound = !progress.sound; tone('tap'); updateControls(); persist(); });
+el('#win-voice').addEventListener('click', () => { progress.winVoice = !progress.winVoice; updateControls(); persist(); });
 el('#speed').addEventListener('click', () => { progress.fast = !progress.fast; updateControls(); persist(); });
 window.addEventListener('keydown', event => {
   if (!ready || transitioning || modal || settings.isOpen() || event.ctrlKey || event.metaKey || event.altKey || /INPUT|TEXTAREA|SELECT/.test((event.target as HTMLElement)?.tagName)) return;
@@ -421,7 +457,7 @@ const updateSW = registerSW({
 el('#update').addEventListener('click', () => showDialog('update'));
 window.addEventListener('offline', () => { el('#offline-state').textContent = 'Playing offline · Progress saved'; });
 window.addEventListener('online', () => { el('#offline-state').textContent = 'Saved on this device'; });
-window.addEventListener('pagehide', persist);
+window.addEventListener('pagehide', () => { stopCelebration(); persist(); });
 el('#scene').addEventListener('graphicslost', () => {
   const saved = persist();
   showFailure('The graphics paused', saved ? 'Your route is saved. Reload to continue where you left off.' : 'Reload to restore the graphics. Browser storage is unavailable, so unsaved moves will be lost.');
@@ -430,7 +466,7 @@ async function boot() {
 try {
   await afterPaint();
   const { saved, state } = await prepareLevel({ type: 'load', raw: readSaveText(), yard: currentYard(), crowdSeed: newCrowdSeed() });
-  if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast });
+  if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast, winVoice: saved.winVoice === true });
   game = new Game(state.level, state);
   scene = new DepotScene(el('#scene'), game.state, selectBus, playArea);
   for (const selector of ['.site-header', '.level-header', '.control-bar']) scene.resizeObserver.observe(el(selector));
@@ -462,7 +498,7 @@ try {
             scene.animate(1.05, () => {}, () => {
               boardingInProgress = false; boardingClock = -.65;
               // Reveal the whole refill after the previous group has boarded.
-              for (const bus of wave.fullBuses) scene.departure(bus, () => { game.depart(bus.id); sync(); });
+              for (const bus of wave.fullBuses) scene.departure(bus, () => { game.depart(bus.id); sync(true); });
               if (wave.fullBuses.length) tone('depart');
               sync();
             });
