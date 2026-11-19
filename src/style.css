@@ -129,7 +129,7 @@ dialog::backdrop { overflow:hidden;overscroll-behavior:contain; }
 .win-stats>span { display:flex;flex-direction:column;gap:.25rem;color:#8a9bb2;font-size:.6rem; }
 .win-stats strong { color:#658d58;font-size:1.7rem;font-weight:800; }
 @container game (inline-size < 25rem) {
-  .level-header { gap:.4rem;padding-inline-end:.5rem; }.level-header>.flex { gap:0; } .level-stats { gap:.5rem;white-space:nowrap; }
+  .level-header { gap:.4rem;padding-inline-end:.5rem; }.level-header>.flex:first-child { gap:0; } .level-stats { gap:.5rem;white-space:nowrap; }
   .level-badge { inline-size:2rem;block-size:2rem; }
   .bus-tag { font-size:.55rem;padding:.12rem .3rem; }
   .control-bar { gap:.2rem; }.control-bar>div { gap:.2rem; }.tool-button { padding-inline:.65rem; }.hint-button { min-inline-size:4.3rem;padding-inline:.6rem; }

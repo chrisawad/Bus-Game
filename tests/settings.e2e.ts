@@ -69,6 +69,8 @@ test('bottom controls fit the visible viewport and clear the system navigation b
     await page.setViewportSize({ width, height });
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom, right } });
     await expect(page.locator('#boarded')).toBeVisible();
+    const left = (await page.locator('#buses-left').boundingBox())!, boarded = (await page.locator('#boarded').boundingBox())!;
+    expect(boarded.x - (left.x + left.width)).toBeGreaterThanOrEqual(8);
     const brand = (await page.locator('.brand').boundingBox())!, stats = (await page.locator('.level-header').boundingBox())!;
     const settings = (await page.locator('#settings').boundingBox())!;
     expect(stats.x).toBeGreaterThanOrEqual(brand.x + brand.width);
