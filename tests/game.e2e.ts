@@ -168,7 +168,7 @@ test('vibrates on impact and sounds the full-stop cue only with sound enabled', 
   expect(feedback.muted).toEqual([]);
   expect(feedback.successful).toEqual([390]);
   expect(feedback.toastHidden).toBe(true);
-  expect(feedback.enabled).toEqual([210]);
+  expect(feedback.enabled).toEqual([392, 294]);
   expect(feedback.status).toContain('All five stops are full');
   expect(feedback.state.moves).toBe(5); expect(feedback.state.bumps).toBe(1);
 });

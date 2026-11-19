@@ -243,6 +243,13 @@ export class DepotScene {
     const islandWidth = this.state.yard.width + 2 * YARD_RIM, islandDepth = this.state.yard.height + 2 * YARD_RIM;
     box(world, islandWidth, .075, islandDepth, '#e1e4d2', 0, .028, islandZ, .16);
     box(world, islandWidth - .1, .08, islandDepth - .1, '#cbd7cd', 0, .032, islandZ, .13);
+    const { ROAD_X, ROAD_TOP, ROAD_BOTTOM } = this.layout;
+    for (let z = ROAD_TOP + .5; z < ROAD_BOTTOM - .2; z += 1) {
+      for (const x of [-ROAD_X, ROAD_X]) box(world, .045, .012, .38, '#f6f5e5', x, .05, z, .012);
+    }
+    for (let x = -ROAD_X + .5; x < ROAD_X - .2; x += 1) {
+      for (const z of [ROAD_TOP, ROAD_BOTTOM]) box(world, .38, .012, .045, '#f6f5e5', x, .05, z, .012);
+    }
     const apronDepth = this.layout.ROAD_NORTH_Z - this.layout.PLAZA_FRONT_Z;
     box(world, this.layout.frameWidth - .6, .08, apronDepth, '#d1dcd1', 0, .015, this.layout.ROAD_NORTH_Z - apronDepth / 2, .22);
     DOCK_X.forEach((x, i) => {

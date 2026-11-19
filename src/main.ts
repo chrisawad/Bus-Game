@@ -160,20 +160,27 @@ function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win' | 'full') {
   try {
     const context = audioContext ??= new AudioContext();
     void context.resume().catch(() => {});
-    const oscillator = context.createOscillator(), gain = context.createGain(), now = context.currentTime;
+    const now = context.currentTime;
     if (kind === 'full') {
-      oscillator.type = 'sawtooth';
-      oscillator.frequency.setValueAtTime(210, now);
-      const filter = context.createBiquadFilter();
-      filter.type = 'lowpass'; filter.frequency.value = 900; filter.Q.value = .7;
-      oscillator.connect(filter); filter.connect(gain);
-      gain.gain.setValueAtTime(.001, now);
-      gain.gain.linearRampToValueAtTime(.035, now + .012);
-      gain.gain.setValueAtTime(.035, now + .09);
-      gain.gain.exponentialRampToValueAtTime(.001, now + .16);
-      gain.connect(context.destination); oscillator.start(now); oscillator.stop(now + .17);
+      const notes = [
+        { delay: 0, from: 392, to: 349, duration: .08 },
+        { delay: .105, from: 294, to: 220, duration: .14 },
+      ];
+      for (const note of notes) {
+        const oscillator = context.createOscillator(), gain = context.createGain();
+        const start = now + note.delay, end = start + note.duration;
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(note.from, start);
+        oscillator.frequency.exponentialRampToValueAtTime(note.to, end);
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(.06, start + .006);
+        gain.gain.exponentialRampToValueAtTime(.001, end - .008);
+        gain.gain.linearRampToValueAtTime(0, end);
+        oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(end);
+      }
       return;
     }
+    const oscillator = context.createOscillator(), gain = context.createGain();
     oscillator.type = kind === 'bump' ? 'triangle' : 'sine';
     const freq = { tap: 390, bump: 110, board: 640, depart: 440, win: 780 }[kind];
     oscillator.frequency.setValueAtTime(freq, now);
