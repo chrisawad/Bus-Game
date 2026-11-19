@@ -27,6 +27,11 @@ function box(parent: THREE.Object3D, w: number, h: number, d: number, color: str
   mesh.position.set(x, y, z); mesh.castShadow = true; mesh.receiveShadow = true;
   parent.add(mesh); return mesh;
 }
+function roadDashOffsets(span: number) {
+  const count = Math.max(1, Math.round(span));
+  const spacing = span / count;
+  return Array.from({ length: count }, (_, i) => (i + .5) * spacing - span / 2);
+}
 function mergeStaticMeshes(parent: THREE.Object3D) {
   parent.updateMatrixWorld(true);
   const inverse = parent.matrixWorld.clone().invert();
@@ -238,17 +243,20 @@ export class DepotScene {
     const worldDepth = this.layout.WORLD_SOUTH_Z - this.layout.WORLD_NORTH_Z;
     box(world, this.layout.frameWidth, .38, worldDepth, '#d9e8d9', 0, -.28, this.layout.WORLD_CENTER_Z, .6);
     box(world, this.layout.frameWidth - .4, .1, worldDepth - .5, '#e4ecdf', 0, -.07, this.layout.WORLD_CENTER_Z, .55);
-    box(world, this.layout.ROAD_WIDTH, .08, this.layout.ROAD_SOUTH_Z - this.layout.ROAD_NORTH_Z, '#aabbb7', 0, -.005, (this.layout.ROAD_NORTH_Z + this.layout.ROAD_SOUTH_Z) / 2, .6);
+    const roadDepth = this.layout.ROAD_SOUTH_Z - this.layout.ROAD_NORTH_Z;
     const islandZ = YARD_TOP + this.state.yard.height / 2;
+    box(world, this.layout.ROAD_WIDTH, .08, roadDepth, '#aabbb7', 0, -.005, islandZ, .6);
     const islandWidth = this.state.yard.width + 2 * YARD_RIM, islandDepth = this.state.yard.height + 2 * YARD_RIM;
     box(world, islandWidth, .075, islandDepth, '#e1e4d2', 0, .028, islandZ, .16);
     box(world, islandWidth - .1, .08, islandDepth - .1, '#cbd7cd', 0, .032, islandZ, .13);
-    const { ROAD_X, ROAD_TOP, ROAD_BOTTOM } = this.layout;
-    for (let z = ROAD_TOP + .5; z < ROAD_BOTTOM - .2; z += 1) {
-      for (const x of [-ROAD_X, ROAD_X]) box(world, .045, .012, .38, '#f6f5e5', x, .05, z, .012);
+    // The driving path allows extra clearance for turns. Center the paint between the visible curbs.
+    const markingWidth = (this.layout.ROAD_WIDTH + islandWidth) / 2;
+    const markingDepth = (roadDepth + islandDepth) / 2;
+    for (const offset of roadDashOffsets(markingDepth)) {
+      for (const x of [-markingWidth / 2, markingWidth / 2]) box(world, .045, .012, .38, '#f6f5e5', x, .05, islandZ + offset, .012);
     }
-    for (let x = -ROAD_X + .5; x < ROAD_X - .2; x += 1) {
-      for (const z of [ROAD_TOP, ROAD_BOTTOM]) box(world, .38, .012, .045, '#f6f5e5', x, .05, z, .012);
+    for (const x of roadDashOffsets(markingWidth)) {
+      for (const z of [islandZ - markingDepth / 2, islandZ + markingDepth / 2]) box(world, .38, .012, .045, '#f6f5e5', x, .05, z, .012);
     }
     const apronDepth = this.layout.ROAD_NORTH_Z - this.layout.PLAZA_FRONT_Z;
     box(world, this.layout.frameWidth - .6, .08, apronDepth, '#d1dcd1', 0, .015, this.layout.ROAD_NORTH_Z - apronDepth / 2, .22);
