@@ -35,6 +35,9 @@ export function polygonsOverlap(a: Polygon, b: Polygon) {
   return true;
 }
 export function sweepDistance(a: Polygon, b: Polygon, velocity: Vec2): number | null {
+  // Discard parked buses behind the moving body before projecting vertices.
+  if ((velocity.x >= 0 && a.left > b.right) || (velocity.x <= 0 && a.right < b.left) ||
+      (velocity.y >= 0 && a.top > b.bottom) || (velocity.y <= 0 && a.bottom < b.top)) return null;
   let enter = -Infinity, leave = Infinity;
   for (let i = 0; i < a.axes.length + b.axes.length; i++) {
     const axis = i < a.axes.length ? a.axes[i] : b.axes[i - a.axes.length];

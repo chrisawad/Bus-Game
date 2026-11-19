@@ -44,6 +44,8 @@ test('shows the warm depot, short feeder queues, and real diagonal buses', async
   await expect(page.locator('.stops-label')).toHaveCount(0);
   await expect(page.locator('#status-strip')).toBeHidden();
   const counter = await page.locator('.level-header').boundingBox();
+  await expect(page.getByText('BOARDED', { exact: true })).toBeVisible();
+  await expect(page.locator('#boarded')).toHaveText('0');
   const actions = await page.locator('.header-actions').boundingBox();
   expect(counter!.x + counter!.width).toBeLessThan(actions!.x);
   expect(save.active.queue).toHaveLength(24);
@@ -60,8 +62,9 @@ test('shows the warm depot, short feeder queues, and real diagonal buses', async
   expect(diagonal).toBeDefined();
   await canvasClick(page, diagonal.id);
   await expect.poll(async () => (await read(page)).active.moves).toBe(1);
+  await expect(page.locator('#status-strip')).toBeHidden();
   await page.locator('#undo').click();
-  await expect(page.locator('#move-count')).toHaveText('0 MOVES');
+  await expect(page.locator('#undo')).toBeDisabled();
   expect((await read(page)).active.boarded).toBe(0);
   expect(errors).toEqual([]);
 });
@@ -96,6 +99,8 @@ test('boards people behind another color and refills both sides in a group', asy
   expect(bus).toBeDefined();
   await canvasClick(page, bus.id);
   await expect.poll(async () => (await read(page)).active.boarded).toBeGreaterThan(1);
+  await expect(page.locator('#boarded')).toBeVisible();
+  await expect(page.locator('#boarded')).not.toHaveText('0');
   const after = await read(page);
   expect(after.active.queue[0].id).toBe(front.id);
   expect(after.active.lines[0].length).toBeLessThan(before.active.lines[0].length - 1);
@@ -126,6 +131,39 @@ test('accepts quick successive dispatches and keeps all stop reservations unique
   await page.locator('#settings-close').click();
   await page.screenshot({ path: 'test-results/' + info.project.name + '-traffic.png', fullPage: true });
 });
+test('vibrates on impact and sounds the full-stop cue only with sound enabled', async ({ page }) => {
+  await page.addInitScript(() => {
+    const pulses: number[] = [], frequencies: number[] = [];
+    Reflect.set(window, '__pulses', pulses); Reflect.set(window, '__notes', frequencies);
+    Object.defineProperty(navigator, 'vibrate', { value: (duration: number) => { pulses.push(duration); return true; } });
+    const setValue = AudioParam.prototype.setValueAtTime;
+    AudioParam.prototype.setValueAtTime = function(value, time) {
+      if (value > 1) frequencies.push(value);
+      return setValue.call(this, value, time);
+    };
+  });
+  await openDepot(page);
+  const blocked = await page.locator('[data-clear="false"][data-status="yard"]').first().getAttribute('data-bus-id');
+  await canvasClick(page, blocked!);
+  await expect.poll(() => page.evaluate(() => Reflect.get(window, '__pulses'))).toEqual([45]);
+  const feedback = await page.evaluate(key => {
+    const yard = [...document.querySelectorAll<HTMLButtonElement>('[data-status="yard"]')];
+    for (const bus of yard.slice(-5).reverse()) bus.click();
+    const notes = Reflect.get(window, '__notes') as number[];
+    const next = document.querySelector<HTMLButtonElement>('[data-status="yard"]')!;
+    next.click();
+    const muted = notes.slice();
+    document.querySelector<HTMLButtonElement>('#sound')!.click();
+    notes.length = 0;
+    next.click();
+    return { muted, enabled: notes.slice(), status: document.querySelector('#status')!.textContent,
+      state: JSON.parse(localStorage.getItem(key)!).active };
+  }, key);
+  expect(feedback.muted).toEqual([]);
+  expect(feedback.enabled).toEqual([330, 220]);
+  expect(feedback.status).toContain('All five stops are full');
+  expect(feedback.state.moves).toBe(5); expect(feedback.state.bumps).toBe(1);
+});
 test('clears the full dense level with concurrent traffic, then advances and restores', async ({ page }, info) => {
   // Normal-motion inputs and boarding are checked above. The long complete
   // playthrough also covers the reduced-motion path and finishes faster in CI.
@@ -145,6 +183,7 @@ test('clears the full dense level with concurrent traffic, then advances and res
   });
   await openDepot(page); await page.locator('#settings').click(); await page.locator('#speed').click();
   await page.locator('#keyboard-panel summary').click();
+  await page.locator('[data-clear="false"][data-status="yard"]').first().press('Enter');
   const ids = await page.locator('[data-bus-id]').evaluateAll(nodes => nodes.map(n => (n as HTMLElement).dataset.busId!).reverse());
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i];
@@ -176,6 +215,7 @@ test('clears the full dense level with concurrent traffic, then advances and res
   }
   await expect(page.locator('#dialog-title')).toContainText('good route', { timeout: 60_000 });
   const finished = await read(page);
+  await expect(page.locator('.win-stats > span').last()).toHaveText('1bump');
   expect(finished.active.buses.every((b: { status: string }) => b.status === 'gone')).toBe(true);
   expect(finished.active.boarded).toBe(finished.active.totalPassengers);
   await page.screenshot({ path: 'test-results/' + info.project.name + '-won.png', fullPage: true });

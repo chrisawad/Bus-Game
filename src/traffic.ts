@@ -1,29 +1,10 @@
-import { BUS_SCALE, DEFAULT_YARD, VECTOR, type Bus, type YardSize } from './game';
+import { VECTOR, type Bus } from './game';
+import { BAY_WIDTH, BUS_SCALE, DEFAULT_YARD, YARD_TOP, createDepotLayout } from './yard';
 import { rectangle, convexHull, polygonsOverlap, type Polygon } from './geometry';
 
 export type Point = { x: number; z: number };
-export const YARD_TOP = -.8;
-const MAX_BUS_LENGTH = 3 * BUS_SCALE;
-export const ROAD_CLEARANCE = MAX_BUS_LENGTH / 2 + .05;
-export const BAY_WIDTH = 1.4 * BUS_SCALE + .18;
-export const BAY_LENGTH = MAX_BUS_LENGTH + .2;
+export { createDepotLayout, YARD_TOP, ROAD_CLEARANCE, BAY_WIDTH, BAY_LENGTH } from './yard';
 export const DOCK_X = [-2, -1, 0, 1, 2].map(index => index * (BAY_WIDTH + .54));
-export function createDepotLayout(yard: YardSize) {
-  const ROAD_X = yard.width / 2 + ROAD_CLEARANCE;
-  const ROAD_TOP = YARD_TOP - ROAD_CLEARANCE;
-  const ROAD_BOTTOM = YARD_TOP + yard.height + ROAD_CLEARANCE;
-  const DOCK_Z = ROAD_TOP - MAX_BUS_LENGTH - .3;
-  const PLAZA_FRONT_Z = DOCK_Z - BAY_LENGTH / 2 - .05;
-  const ROAD_WIDTH = (ROAD_X + ROAD_CLEARANCE) * 2;
-  const ROAD_NORTH_Z = DOCK_Z + BAY_LENGTH / 2;
-  const ROAD_SOUTH_Z = ROAD_BOTTOM + ROAD_CLEARANCE;
-  const WORLD_NORTH_Z = PLAZA_FRONT_Z - 4.6;
-  const WORLD_SOUTH_Z = ROAD_SOUTH_Z + .1;
-  const WORLD_CENTER_Z = (WORLD_NORTH_Z + WORLD_SOUTH_Z) / 2;
-  return { yard, ROAD_X, ROAD_TOP, ROAD_BOTTOM, DOCK_Z, PLAZA_FRONT_Z, ROAD_WIDTH,
-    ROAD_NORTH_Z, ROAD_SOUTH_Z, WORLD_NORTH_Z, WORLD_SOUTH_Z, WORLD_CENTER_Z,
-    CAMERA_TARGET_Z: WORLD_CENTER_Z - .2 };
-}
 export type DepotLayout = ReturnType<typeof createDepotLayout>;
 export const DEFAULT_LAYOUT = createDepotLayout(DEFAULT_YARD);
 export const { ROAD_X, ROAD_TOP, ROAD_BOTTOM, DOCK_Z, PLAZA_FRONT_Z } = DEFAULT_LAYOUT;

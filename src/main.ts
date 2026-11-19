@@ -31,10 +31,16 @@ const icons: Record<string, string> = {
 const icon = (name: string) => '<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || '') + '</svg>';
 const el = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
-const currentYard = () => {
-  const scene = el('#scene');
-  return fitYard(scene.clientWidth, scene.clientHeight);
-};
+function playArea() {
+  const board = el('#scene').getBoundingClientRect();
+  const top = Math.max(el('.level-header').getBoundingClientRect().bottom, el('.site-header').getBoundingClientRect().bottom) - board.top + 4;
+  const bottom = board.bottom - el('.control-bar').getBoundingClientRect().top + 4;
+  return { width: Math.max(1, board.width - 8), height: Math.max(1, board.height - top - bottom), centerOffset: (top - bottom) / 2 };
+}
+function currentYard() {
+  const { width, height } = playArea();
+  return fitYard(width, height);
+}
 const newCrowdSeed = () => Math.floor(Math.random() * 0x100000000);
 let game: Game;
 const progress: Omit<Save, 'active'> = { version: 7, completed: [], best: {}, sound: false, fast: false };
@@ -79,7 +85,6 @@ el('#app').innerHTML = `
       <div class="board-card">
         <span class="sr-only" id="stops-status"></span>
         <div id="scene" class="scene" aria-busy="true"></div>
-        <div class="board-footnote"><span id="move-count">0 MOVES</span></div>
         <div class="board-progress" role="progressbar" aria-label="Passengers boarded" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progress-bar"></span></div>
       </div>
       <div class="status-strip" id="status-strip" hidden>
@@ -150,18 +155,24 @@ function showFailure(title: string, detail: string) {
 el('#loading-reload').addEventListener('click', () => location.reload());
 setLoading(true);
 
-function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win') {
+function tone(kind: 'tap' | 'bump' | 'board' | 'depart' | 'win' | 'full') {
   if (!progress.sound || !audioReady) return;
   try {
-    audioContext ??= new AudioContext(); void audioContext.resume();
-    const oscillator = audioContext.createOscillator(), gain = audioContext.createGain(), now = audioContext.currentTime;
-    oscillator.type = kind === 'bump' ? 'triangle' : 'sine';
-    const freq = { tap: 390, bump: 110, board: 640, depart: 440, win: 780 }[kind];
-    oscillator.frequency.setValueAtTime(freq, now);
-    oscillator.frequency.exponentialRampToValueAtTime(kind === 'bump' ? 55 : freq * 1.4, now + .12);
-    gain.gain.setValueAtTime(kind === 'board' ? .025 : .065, now);
-    gain.gain.exponentialRampToValueAtTime(.001, now + .18);
-    oscillator.connect(gain); gain.connect(audioContext.destination); oscillator.start(now); oscillator.stop(now + .2);
+    const context = audioContext ??= new AudioContext();
+    if (context.state === 'suspended') void context.resume().catch(() => {});
+    const notes = { tap: [390], bump: [110], board: [640], depart: [440], win: [780], full: [330, 220] }[kind];
+    const now = context.currentTime;
+    notes.forEach((frequency, i) => {
+      const oscillator = context.createOscillator(), gain = context.createGain();
+      const start = now + i * .13, duration = kind === 'full' ? .1 : .18;
+      oscillator.type = kind === 'bump' || kind === 'full' ? 'triangle' : 'sine';
+      oscillator.frequency.setValueAtTime(frequency, start);
+      if (kind !== 'full') oscillator.frequency.exponentialRampToValueAtTime(kind === 'bump' ? 55 : frequency * 1.4, start + .12);
+      gain.gain.setValueAtTime(.001, start);
+      gain.gain.exponentialRampToValueAtTime(kind === 'board' ? .025 : .065, start + .005);
+      gain.gain.exponentialRampToValueAtTime(.001, start + duration);
+      oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(start + duration + .01);
+    });
   } catch { /* Play remains available without audio. */ }
 }
 function persist() {
@@ -195,7 +206,6 @@ function sync() {
   el('#scene').dataset.inTransit = String(s.buses.filter(bus => bus.status === 'arriving' || bus.status === 'leaving').length);
   el('#level-badge').textContent = String(s.level).padStart(2, '0'); el('#level-name').textContent = names[(s.level - 1) % names.length];
   el('#buses-left').textContent = String(game.remaining); el('#boarded').textContent = String(s.boarded); el('#total').textContent = ' / ' + s.totalPassengers;
-  el('#move-count').textContent = s.moves + (s.moves === 1 ? ' MOVE' : ' MOVES');
   const percent = s.boarded / s.totalPassengers * 100;
   el('#progress-bar').style.width = percent + '%'; el('.board-progress').setAttribute('aria-valuenow', String(Math.round(percent)));
   el('#stops-status').textContent = game.availableStops.length + (game.availableStops.length === 1 ? ' stop open' : ' stops open');
@@ -243,19 +253,23 @@ function selectBus(id: string) {
   audioReady = true;
   if (!ready || transitioning || modal || game.state.phase !== 'playing') return;
   const bus = game.state.buses.find(bus => bus.id === id);
-  if (bus && scene.bumping.has(id)) {
+  const stops = game.availableStops;
+  if (bus && stops.length && scene.bumping.has(id)) {
     if (collisionFor(bus, game.state.buses)) { say('That bus is still blocked. Clear the bus ahead first.', true); return; }
-    if (game.availableStops.length) scene.cancelBump(bus);
+    scene.cancelBump(bus);
   }
-  const plan = bus?.status === 'yard' && !collisionFor(bus, game.state.buses) ? scene.planArrival(bus, game.availableStops) : undefined;
+  const plan = stops.length && bus?.status === 'yard' && !collisionFor(bus, game.state.buses) ? scene.planArrival(bus, stops) : undefined;
   const result = game.dispatch(id, plan?.dock);
-  if (result.type === 'full') { say('The stops are full. Let a matching bus fill up, or undo a move.', true); return; }
+  if (result.type === 'full') { tone('full'); say('All five stops are full. Wait for a bus to leave or use Undo.', true); return; }
   if (result.type === 'busy') { say('That bus is already on its way. Choose a bus in the jam.'); return; }
   if (result.type === 'bump') {
     tone('bump'); say('A little bump! Clear the ' + PALETTE[result.collision.blocker.color].name.toLowerCase() + ' bus ahead first.', true);
-    scene.bump(result.bus, result.collision.distance, () => sync()); persist(); return;
+    scene.bump(result.bus, result.collision.distance, () => {
+      try { navigator.vibrate?.(45); } catch { /* Haptics are optional on this device. */ }
+    }, () => sync());
+    persist(); return;
   }
-  tone('tap'); say(PALETTE[result.bus.color].name + ' is heading to stop ' + (result.bus.dock! + 1) + '.');
+  tone('tap'); el('#status-strip').hidden = true;
   scene.drive(result.bus, () => { game.arrive(id); sync(); }, plan?.points);
   sync();
 }
@@ -323,7 +337,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
     content.innerHTML = '<div class="dialog-emblem trophy">' + icon('trophy') + '</div><div class="eyebrow">EVERYONE MADE IT HOME</div><h2 id="dialog-title">Now that’s a good route.</h2>' +
       '<p>Every bus is gone. Every little person is on their way. Take a moment—you’ve earned it.</p>' +
       '<div class="win-stats"><span><strong>' + game.state.buses.length + '</strong>buses cleared</span><span><strong>' + game.state.boarded +
-      '</strong>happy passengers</span><span><strong>' + game.state.moves + '</strong>moves</span></div>' +
+      '</strong>happy passengers</span><span><strong>' + game.state.bumps + '</strong>' + (game.state.bumps === 1 ? 'bump' : 'bumps') + '</span></div>' +
       '<button class="dialog-primary" data-action="next">On to route ' + (game.state.level + 1) + ' ' + icon('arrow') + '</button><button class="dialog-secondary" data-action="restart">Play this one again</button>';
   }
   content.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => {
@@ -403,7 +417,8 @@ try {
   const { saved, state } = await prepareLevel({ type: 'load', raw: readSaveText(), yard: currentYard(), crowdSeed: newCrowdSeed() });
   if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast });
   game = new Game(state.level, state);
-  scene = new DepotScene(el('#scene'), game.state, selectBus);
+  scene = new DepotScene(el('#scene'), game.state, selectBus, playArea);
+  for (const selector of ['.site-header', '.level-header', '.control-bar']) scene.resizeObserver.observe(el(selector));
   await scene.reset(game.state);
   scene.onHover = (bus: Bus | null) => {
     if (!modal) el('#scene').setAttribute('title', bus ? PALETTE[bus.color].name + ' bus · ' + bus.capacity + ' seats · Click to drive' : '');

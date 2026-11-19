@@ -1,5 +1,5 @@
-import { rectangle, polygonsOverlap, sweepDistance, type Polygon } from './geometry';
-import { BUS_SCALE, DEFAULT_YARD, type YardSize } from './yard';
+import { rectangle, sweepDistance, type Polygon } from './geometry';
+import { BUS_SCALE, DEFAULT_YARD, MAX_YARD_SIDE, MAX_YARD_AREA, type YardSize } from './yard';
 import { yieldToBrowser } from './scheduling';
 export { BUS_SCALE, DEFAULT_YARD, type YardSize } from './yard';
 
@@ -81,11 +81,13 @@ function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Gener
   const rng = random(seed);
   const colors = Object.keys(PALETTE) as BusColor[];
   const buses: Bus[] = [], parked: Polygon[] = [];
+  let exposed: { shape: Polygon; forward: { x: number; y: number } }[] = [];
   const directions = Object.keys(VECTOR) as Direction[];
   // Grow a tightly packed, irregular jam from its center. Every new bus has
   // a clear forward exit at insertion, so reverse insertion is a solution.
-  for (let index = 0; index < 84; index++) {
-    const exposed = buses.filter(bus => !collisionFor(bus, buses));
+  // Version-7 yards up to 200 square units retain their original seed layout.
+  const busLimit = 84 + Math.ceil(Math.max(0, yard.width * yard.height - 200) / 2);
+  for (let index = 0; index < busLimit; index++) {
     let best: { bus: Bus; shape: Polygon; score: number } | undefined;
     for (let attempt = 0; attempt < 1400; attempt++) {
       if (attempt % 32 === 0) yield;
@@ -95,14 +97,18 @@ function* generateLevel(level: number, yard: YardSize, crowdSeed: number): Gener
         capacity: length === 3 ? 24 : length === 2 ? 12 : 8, filled: 0, status: 'yard', dock: null };
       const shape = rectangle(bus, VECTOR[bus.direction], (length + .02) * BUS_SCALE, 1.02 * BUS_SCALE);
       if (shape.left < .04 || shape.right > yard.width - .04 || shape.top < .04 || shape.bottom > yard.height - .04) continue;
-      if (parked.some(other => polygonsOverlap(shape, other) || sweepDistance(shape, other, VECTOR[bus.direction]) !== null)) continue;
+      if (parked.some(other => sweepDistance(shape, other, VECTOR[bus.direction]) !== null)) continue;
       const wantsDiagonal = index % 3 !== 1;
-      const blocks = exposed.filter(other => sweepDistance(busShape(other), busShape(bus), VECTOR[other.direction]) !== null).length;
+      const body = busShape(bus);
+      const blocks = exposed.filter(other => sweepDistance(other.shape, body, other.forward) !== null).length;
       const score = Math.hypot((bus.x / yard.width - .5) * 10, (bus.y / yard.height - .5) * 10) + ((bus.direction.length === 2) !== wantsDiagonal ? 1.75 : 0) - blocks * .2;
       if (!best || score < best.score) best = { bus, shape, score };
     }
     if (!best) break;
     buses.push(best.bus); parked.push(best.shape);
+    const body = busShape(best.bus);
+    exposed = exposed.filter(other => sweepDistance(other.shape, body, other.forward) === null);
+    exposed.push({ shape: body, forward: VECTOR[best.bus.direction] });
   }
   const state: GameState = {
     level, seed, crowdSeed, yard: { ...yard }, buses, lines: [[], []], queue: [], nextLine: 0, moves: 0, bumps: 0,
@@ -181,12 +187,12 @@ export class Game {
   dispatch(id: string, preferredDock?: number): { type: 'drive'; bus: Bus } | { type: 'bump'; bus: Bus; collision: Collision } | { type: 'full' } | { type: 'busy' } {
     const bus = this.state.buses.find(bus => bus.id === id);
     if (!bus || bus.status !== 'yard' || this.state.phase !== 'playing') return { type: 'busy' };
+    if (!this.availableStops.length) return { type: 'full' };
     const collision = collisionFor(bus, this.state.buses);
     if (collision) {
       this.state.bumps++;
       return { type: 'bump', bus, collision };
     }
-    if (!this.availableStops.length) return { type: 'full' };
     this.history.push(clone(this.state));
     if (this.history.length > 40) this.history.shift();
     const dock = preferredDock !== undefined && this.availableStops.includes(preferredDock) ? preferredDock : this.availableStops[0];
@@ -232,6 +238,7 @@ export class Game {
   undo() {
     const previous = this.history.pop();
     if (!previous) return false;
+    previous.bumps = this.state.bumps;
     this.state = normalizeRestored(previous);
     return true;
   }
@@ -293,6 +300,6 @@ export function validState(input: unknown): input is GameState {
 
 export function validLevelMetadata(s: Pick<GameState, 'level' | 'yard'> | null | undefined): s is Pick<GameState, 'level' | 'yard'> {
   return !!s && Number.isInteger(s.level) && s.level >= 1 && s.level <= 9999 && !!s.yard &&
-    [s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n >= 6.5 && n <= 23 && n * 2 === Math.round(n * 2)) &&
-    s.yard.width * s.yard.height <= 200;
+    [s.yard.width, s.yard.height].every(n => Number.isFinite(n) && n >= 6.5 && n <= MAX_YARD_SIDE && n * 2 === Math.round(n * 2)) &&
+    s.yard.width * s.yard.height <= MAX_YARD_AREA;
 }

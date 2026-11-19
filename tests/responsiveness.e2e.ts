@@ -72,7 +72,7 @@ test('keeps play available when Worker and Scheduler APIs are unavailable', asyn
   const point = await position(page);
   await page.locator('#scene canvas').click({ position: { x: point.x, y: point.y } });
   await expect.poll(async () => (await read(page)).moves).toBe(1);
-  await page.locator('#undo').click(); await expect(page.locator('#move-count')).toHaveText('0 MOVES');
+  await page.locator('#undo').click(); await expect(page.locator('#undo')).toBeDisabled();
 });
 
 test('recovers when the worker asset cannot load', async ({ page, context }) => {
@@ -98,12 +98,12 @@ test('reuses bus resources on repeated undo and leaves a settled board idle', as
       document.querySelector<HTMLButtonElement>('[data-clear="true"][data-status="yard"]')!.click();
       const start = performance.now();
       const committed = new Promise<number>(resolve => {
-        const counter = document.querySelector('#move-count')!;
+        const undo = document.querySelector<HTMLButtonElement>('#undo')!;
         const observer = new MutationObserver(() => {
-          if (counter.textContent !== '0 MOVES') return;
+          if (!undo.disabled) return;
           observer.disconnect(); resolve(performance.now() - start);
         });
-        observer.observe(counter, { childList: true, subtree: true, characterData: true });
+        observer.observe(undo, { attributes: true, attributeFilter: ['disabled'] });
       });
       document.querySelector<HTMLButtonElement>('#undo')!.click();
       // Observe the actual UI commit in a microtask, rather than measuring
@@ -135,7 +135,7 @@ test('shows press feedback, tolerates finger jitter, and ignores drags or cancel
   } else { await page.mouse.move(point.x + 4, point.y + 3); await page.mouse.up(); }
   await expect.poll(async () => (await read(page)).moves).toBe(1);
   expect((await read(page)).buses.find((bus: Bus) => bus.id === point.id).status).not.toBe('yard');
-  await page.locator('#undo').click(); await expect(page.locator('#move-count')).toHaveText('0 MOVES');
+  await page.locator('#undo').click(); await expect(page.locator('#undo')).toBeDisabled();
   const next = await position(page), before = await read(page);
   if (info.project.name === 'mobile') {
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: next.x, y: next.y }] });
@@ -236,14 +236,14 @@ test('undo during group boarding preserves passengers and cancels stale animatio
     const before = JSON.parse(localStorage.getItem(key)!).active;
     document.querySelector<HTMLButtonElement>('[data-clear="true"][data-status="yard"]')!.click();
     document.querySelector<HTMLButtonElement>('#undo')!.click();
-    while (document.querySelector('#move-count')!.textContent !== before.moves + ' MOVE') await new Promise(resolve => setTimeout(resolve, 0));
+    while (JSON.parse(localStorage.getItem(key)!).active.moves !== before.moves) await new Promise(resolve => setTimeout(resolve, 0));
     return { before, after: JSON.parse(localStorage.getItem(key)!).active };
   }, key);
   expect(before.boarded).toBeGreaterThan(0);
   expect(validState(after)).toBe(true);
   expect(after).toEqual(new Game(after.level, before).state);
   await expect(page.locator('#scene')).toHaveAttribute('data-boarding', 'false');
-  await page.locator('#undo').click(); await expect(page.locator('#move-count')).toHaveText('0 MOVES');
+  await page.locator('#undo').click(); await expect(page.locator('#undo')).toBeDisabled();
   expect((await read(page)).boarded).toBe(0);
 });
 

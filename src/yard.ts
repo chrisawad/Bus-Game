@@ -1,17 +1,60 @@
 export type YardSize = { width: number; height: number };
 export const BUS_SCALE = .78;
 export const DEFAULT_YARD: YardSize = { width: 10, height: 15 };
+export const MAX_YARD_SIDE = 32, MAX_YARD_AREA = 320;
 
-// Choose the board proportions before generating a level. Preserve them for
-// the life of the level so rotating a phone never moves a parked bus.
+export const YARD_TOP = -.8;
+const MAX_BUS_LENGTH = 3 * BUS_SCALE;
+// The inside of the lane needs room for the diagonal swept by a turning coach.
+// On the outside a straight-running bus only needs half its width and a shoulder.
+export const ROAD_CLEARANCE = Math.hypot(MAX_BUS_LENGTH, BUS_SCALE) / 2 + .025;
+export const ROAD_SHOULDER = BUS_SCALE / 2 + .09;
+export const YARD_RIM = .22;
+export const BAY_WIDTH = 1.4 * BUS_SCALE + .18;
+export const BAY_LENGTH = MAX_BUS_LENGTH + .2;
+const PLAZA_DEPTH = 4.4, PLINTH_EDGE = .3;
+const EXTRA_WIDTH = 2 * (ROAD_CLEARANCE + ROAD_SHOULDER + PLINTH_EDGE);
+const PLAZA_WIDTH = 14.2; // Includes the lamps at either end of the stops.
+
+export const CAMERA_RISE = 30, CAMERA_RUN = 24.2;
+const GROUND_PROJECTION = CAMERA_RISE / Math.hypot(CAMERA_RISE, CAMERA_RUN);
+// Project the shelter roof at the north end and the plinth at the south end.
+const NORTH_OVERHANG = .73, SOUTH_OVERHANG = .29;
+export const FRAME_CENTER_Y = (NORTH_OVERHANG - SOUTH_OVERHANG) / 2;
+
+export function createDepotLayout(yard: YardSize) {
+  const ROAD_X = yard.width / 2 + ROAD_CLEARANCE;
+  const ROAD_TOP = YARD_TOP - ROAD_CLEARANCE;
+  const ROAD_BOTTOM = YARD_TOP + yard.height + ROAD_CLEARANCE;
+  const ROAD_NORTH_Z = ROAD_TOP - ROAD_SHOULDER;
+  // A bus can emerge opposite an occupied stop before it turns onto the lane.
+  const DOCK_Z = ROAD_TOP - ROAD_CLEARANCE - BAY_LENGTH / 2;
+  const PLAZA_FRONT_Z = DOCK_Z - BAY_LENGTH / 2 - .05;
+  const ROAD_WIDTH = (ROAD_X + ROAD_SHOULDER) * 2;
+  const ROAD_SOUTH_Z = ROAD_BOTTOM + ROAD_SHOULDER;
+  const WORLD_NORTH_Z = PLAZA_FRONT_Z - PLAZA_DEPTH;
+  const WORLD_SOUTH_Z = ROAD_SOUTH_Z + .1;
+  const WORLD_CENTER_Z = (WORLD_NORTH_Z + WORLD_SOUTH_Z) / 2;
+  const frameWidth = Math.max(PLAZA_WIDTH, ROAD_WIDTH + 2 * PLINTH_EDGE);
+  const frameHeight = (WORLD_SOUTH_Z - WORLD_NORTH_Z) * GROUND_PROJECTION + NORTH_OVERHANG + SOUTH_OVERHANG;
+  return { yard, ROAD_X, ROAD_TOP, ROAD_BOTTOM, DOCK_Z, PLAZA_FRONT_Z, ROAD_WIDTH,
+    ROAD_NORTH_Z, ROAD_SOUTH_Z, WORLD_NORTH_Z, WORLD_SOUTH_Z, WORLD_CENTER_Z, frameWidth, frameHeight };
+}
+
+// Fit new routes to the space between the controls. Existing routes keep their
+// world coordinates on rotation and reload, and only the camera refits.
 export function fitYard(width: number, height: number): YardSize {
-  const area = 150, projection = 30 / Math.hypot(30, 24.2);
-  const aspect = Math.max(240, width - 16) / Math.max(240, height - 128);
-  const horizontalMargin = 3 * BUS_SCALE + .1 + 1.6;
-  const verticalMargin = projection * (9 * BUS_SCALE + 5.3) + .4;
-  const a = aspect * projection, b = aspect * verticalMargin - horizontalMargin;
-  const depth = (-b + Math.sqrt(b * b + 4 * a * area)) / (2 * a);
-  const round = (n: number) => Math.round(n * 2) / 2;
-  const yardWidth = round(Math.max(8.5, Math.min(23, area / depth)));
-  return { width: yardWidth, height: round(Math.max(6.5, Math.min(20, area / yardWidth))) };
+  width = Math.max(1, width); height = Math.max(1, height);
+  const area = 240;
+  const extraHeight = createDepotLayout({ width: 0, height: 0 }).frameHeight;
+  const aspect = width / height;
+  // Solve w*h = area with (w + margins)/(h*projection + margins) = aspect.
+  const a = aspect * GROUND_PROJECTION, b = aspect * extraHeight - EXTRA_WIDTH;
+  const depth = 2 * area / (Math.sqrt(b * b + 4 * a * area) + b);
+  const scale = Math.min(width / PLAZA_WIDTH, height / (depth * GROUND_PROJECTION + extraHeight));
+  const halfUnit = (n: number) => Math.floor(n * 2) / 2;
+  const yardWidth = halfUnit(Math.max(8.5, Math.min(MAX_YARD_SIDE, width / scale - EXTRA_WIDTH)));
+  const yardHeight = halfUnit(Math.max(6.5, Math.min(MAX_YARD_SIDE, MAX_YARD_AREA / yardWidth,
+    (height / scale - extraHeight) / GROUND_PROJECTION)));
+  return { width: yardWidth, height: yardHeight };
 }

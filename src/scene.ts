@@ -5,6 +5,7 @@ import { BUS_SCALE, VISIBLE_PER_LINE, PALETTE, VECTOR, directionAngle, type Bus,
 import { Traffic, createDepotLayout, DOCK_X, BAY_WIDTH, BAY_LENGTH, YARD_TOP, arrivalRoute, departureRoutes, yardPosition, type DepotLayout, type Point } from './traffic';
 import { yieldToBrowser } from './scheduling';
 import { distanceToOutline } from './picking';
+import { CAMERA_RISE, CAMERA_RUN, FRAME_CENTER_Y, YARD_RIM } from './yard';
 const v = (x: number, z: number, y = 0) => new THREE.Vector3(x, y, z);
 const PERSON_SCALE = 1.75;
 const ease = (t: number) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
@@ -186,7 +187,8 @@ export class DepotScene {
   onHover?: (bus: Bus | null) => void;
   resizeObserver: ResizeObserver;
   disposed = false;
-  constructor(mount: HTMLElement, state: GameState, onSelect: (id: string) => void) {
+  constructor(mount: HTMLElement, state: GameState, onSelect: (id: string) => void,
+    readonly playArea: () => { width: number; height: number; centerOffset: number }) {
     this.mount = mount; this.state = state; this.onSelect = onSelect;
     this.layout = createDepotLayout(state.yard); this.traffic = new Traffic(this.layout);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
@@ -204,7 +206,6 @@ export class DepotScene {
     this.overlays = document.createElement('div'); this.overlays.className = 'scene-overlays';
     this.overlays.setAttribute('aria-hidden', 'true'); mount.appendChild(this.overlays);
     this.scene.add(this.world);
-    this.camera.position.set(0, 30, this.layout.CAMERA_TARGET_Z + 24.2); this.camera.lookAt(0, 0, this.layout.CAMERA_TARGET_Z);
     this.scene.add(new THREE.HemisphereLight('#fff9e8', '#9cbdb0', 1.6));
     const sun = new THREE.DirectionalLight('#fff8e6', 2);
     sun.position.set(-8, 18, 9); sun.castShadow = true;
@@ -235,17 +236,15 @@ export class DepotScene {
   buildEnvironment() {
     const world = this.world;
     const worldDepth = this.layout.WORLD_SOUTH_Z - this.layout.WORLD_NORTH_Z;
-    box(world, this.layout.ROAD_WIDTH + .6, .38, worldDepth, '#d9e8d9', 0, -.28, this.layout.WORLD_CENTER_Z, .6);
-    box(world, this.layout.ROAD_WIDTH + .2, .1, worldDepth - .5, '#e4ecdf', 0, -.07, this.layout.WORLD_CENTER_Z, .55);
+    box(world, this.layout.frameWidth, .38, worldDepth, '#d9e8d9', 0, -.28, this.layout.WORLD_CENTER_Z, .6);
+    box(world, this.layout.frameWidth - .4, .1, worldDepth - .5, '#e4ecdf', 0, -.07, this.layout.WORLD_CENTER_Z, .55);
     box(world, this.layout.ROAD_WIDTH, .08, this.layout.ROAD_SOUTH_Z - this.layout.ROAD_NORTH_Z, '#aabbb7', 0, -.005, (this.layout.ROAD_NORTH_Z + this.layout.ROAD_SOUTH_Z) / 2, .6);
-    box(world, this.state.yard.width + .25, .09, this.state.yard.height + .25, '#cbd7cd', 0, .025, YARD_TOP + this.state.yard.height / 2, .36);
-    for (const x of [-this.layout.ROAD_X, this.layout.ROAD_X]) for (let z = this.layout.ROAD_TOP + .55; z < this.layout.ROAD_BOTTOM; z += 1.1)
-      box(world, .045, .012, .43, '#f6f5e5', x, .05, z, .012);
-    for (let x = -this.layout.ROAD_X + .55; x < this.layout.ROAD_X; x += 1.1) {
-      box(world, .43, .012, .045, '#f6f5e5', x, .05, this.layout.ROAD_BOTTOM, .012);
-      box(world, .43, .012, .045, '#f6f5e5', x, .05, this.layout.ROAD_TOP, .012);
-    }
-    box(world, this.layout.ROAD_WIDTH, .08, BAY_LENGTH + .1, '#d1dcd1', 0, .015, this.layout.DOCK_Z, .22);
+    const islandZ = YARD_TOP + this.state.yard.height / 2;
+    const islandWidth = this.state.yard.width + 2 * YARD_RIM, islandDepth = this.state.yard.height + 2 * YARD_RIM;
+    box(world, islandWidth, .075, islandDepth, '#e1e4d2', 0, .028, islandZ, .16);
+    box(world, islandWidth - .1, .08, islandDepth - .1, '#cbd7cd', 0, .032, islandZ, .13);
+    const apronDepth = this.layout.ROAD_NORTH_Z - this.layout.PLAZA_FRONT_Z;
+    box(world, this.layout.frameWidth - .6, .08, apronDepth, '#d1dcd1', 0, .015, this.layout.ROAD_NORTH_Z - apronDepth / 2, .22);
     DOCK_X.forEach((x, i) => {
       box(world, BAY_WIDTH, .035, BAY_LENGTH, '#f4f4df', x, .07, this.layout.DOCK_Z, .16);
       box(world, BAY_WIDTH - .08, .04, BAY_LENGTH - .1, '#bed0c0', x, .075, this.layout.DOCK_Z, .14);
@@ -256,7 +255,7 @@ export class DepotScene {
       box(world, .2, .09, .075, '#fff8df', x + .72, .86, this.layout.DOCK_Z - .75, .018);
     });
     const plaza = new THREE.Group(); plaza.position.z = this.layout.PLAZA_FRONT_Z; world.add(plaza);
-    box(plaza, Math.min(this.layout.ROAD_WIDTH, 14.4), .11, 4.3, '#f3edda', 0, .015, -2.15, .45);
+    box(plaza, Math.min(this.layout.frameWidth - .6, 14.4), .11, 4.3, '#f3edda', 0, .015, -2.15, .45);
     box(plaza, 4.9, .014, 1.25, '#e8e1c9', 0, .085, -.95, .3);
     for (const side of [-1, 1]) {
       rail(plaza, [v(side * 6.25, -3.9, .25), v(side * 6.15, -2.4, .25), v(side * 5.7, -1.65, .25), v(side * 3.5, -1.1, .25)]);
@@ -344,21 +343,16 @@ export class DepotScene {
     if (!width || !height) return;
     if (width !== this.viewWidth || height !== this.viewHeight) this.renderer.setSize(width, height);
     this.viewWidth = width; this.viewHeight = height; this.dirty = true;
-    const aspect = width / height;
-    this.camera.position.set(0, 30, this.layout.CAMERA_TARGET_Z + 24.2);
-    this.camera.lookAt(0, 0, this.layout.CAMERA_TARGET_Z);
+    const { WORLD_CENTER_Z, frameWidth, frameHeight } = this.layout;
+    this.camera.position.set(0, CAMERA_RISE, WORLD_CENTER_Z + CAMERA_RUN);
+    this.camera.lookAt(0, 0, WORLD_CENTER_Z);
     this.camera.updateMatrixWorld();
-    // Fit the full plaza and road in both orientations without stretching the scene.
-    const halfWidth = Math.max(6.9, this.layout.ROAD_X + .65);
-    const corners = [-halfWidth, halfWidth].flatMap(x => [this.layout.WORLD_NORTH_Z, this.layout.WORLD_SOUTH_Z].map(z => v(x, z, .5).applyMatrix4(this.camera.matrixWorldInverse)));
-    const viewW = Math.max(...corners.map(p => p.x)) - Math.min(...corners.map(p => p.x));
-    const viewH = Math.max(...corners.map(p => p.y)) - Math.min(...corners.map(p => p.y));
-    // Reserve only the small overlay controls; use the remaining screen.
-    const usableHeight = Math.max(height * .65, height - 128);
-    const usableWidth = Math.max(width * .8, width - 16);
-    const halfH = Math.max((viewH / 2 + .2) * height / usableHeight, (viewW / 2 + .15) * width / usableWidth / aspect);
-    this.camera.left = -halfH * aspect; this.camera.right = halfH * aspect;
-    this.camera.top = halfH; this.camera.bottom = -halfH; this.camera.updateProjectionMatrix();
+    const space = this.playArea();
+    const scale = Math.min(space.width / frameWidth, space.height / frameHeight);
+    const centerY = FRAME_CENTER_Y + space.centerOffset / scale;
+    this.camera.left = -width / (2 * scale); this.camera.right = -this.camera.left;
+    this.camera.top = centerY + height / (2 * scale); this.camera.bottom = centerY - height / (2 * scale);
+    this.camera.updateProjectionMatrix();
   }
   hit(event: PointerEvent) {
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -448,7 +442,7 @@ export class DepotScene {
       this.animate(.12, t => visual.group.position.lerpVectors(start, origin, ease(t)));
     }
   }
-  bump(bus: Bus, distance: number, done: () => void) {
+  bump(bus: Bus, distance: number, onImpact: () => void, done: () => void) {
     this.bumping.add(bus.id);
     const group = this.buses.get(bus.id)!.group;
     const start = group.position.clone();
@@ -463,7 +457,7 @@ export class DepotScene {
       else {
         if (!sparked) {
           const front = start.clone().add(v(vector.x * (travel + (bus.length - .18) * BUS_SCALE / 2), vector.y * (travel + (bus.length - .18) * BUS_SCALE / 2), .55));
-          this.burst(front, '#f6c55c', 9); sparked = true;
+          this.burst(front, '#f6c55c', 9); sparked = true; onImpact();
         }
         move = (1 - ease((t - impactT) / (1 - impactT))) * travel;
       }

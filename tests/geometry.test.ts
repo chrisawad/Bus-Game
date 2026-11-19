@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { Game, DEFAULT_YARD, BUS_SCALE, VECTOR, busShape, collisionFor, type Bus, type Direction } from '../src/game';
 import { polygonsOverlap } from '../src/geometry';
+import { createDepotLayout, fitYard, YARD_RIM } from '../src/yard';
 import { yardExit, yardPosition, trafficOverlaps, BAY_WIDTH, BAY_LENGTH, DOCK_X, DOCK_Z, YARD_TOP, ROAD_X, ROAD_TOP, ROAD_BOTTOM } from '../src/traffic';
 
 describe('angled bus geometry', () => {
+  it('uses one bus lane on all four sides and puts the recovered space into parking', () => {
+    for (const [width, height] of [[382, 708], [440, 800], [1432, 864]]) {
+      const yard = fitYard(width, height), layout = createDepotLayout(yard);
+      const widths = [(layout.ROAD_WIDTH - yard.width) / 2, YARD_TOP - layout.ROAD_NORTH_Z,
+        layout.ROAD_SOUTH_Z - (YARD_TOP + yard.height)];
+      for (const w of widths) {
+        expect(w - YARD_RIM).toBeGreaterThan(BUS_SCALE);
+        expect(w - YARD_RIM).toBeLessThan(2 * BUS_SCALE);
+      }
+      expect(yard.width * yard.height).toBeGreaterThan(220);
+      const scale = Math.min(width / layout.frameWidth, height / layout.frameHeight);
+      expect(layout.frameHeight * scale).toBeGreaterThan(height * .95);
+    }
+  });
   it('fits the longest bus into compact bays without obstructing perimeter turns', () => {
     expect(BAY_LENGTH).toBeGreaterThan(3 * BUS_SCALE);
     expect(BAY_WIDTH).toBeGreaterThan(BUS_SCALE);

@@ -65,9 +65,14 @@ test('bottom controls fit the visible viewport and clear the system navigation b
   await page.setViewportSize({ width: 448, height: 936 });
   await page.goto('./');
   await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
-  for (const [width, height, bottom, right] of [[448, 936, 0, 0], [448, 936, 48, 0], [936, 448, 0, 48]]) {
+  for (const [width, height, bottom, right] of [[320, 640, 0, 0], [448, 936, 0, 0], [448, 936, 48, 0], [936, 448, 0, 48]]) {
     await page.setViewportSize({ width, height });
     await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom, right } });
+    await expect(page.locator('#boarded')).toBeVisible();
+    const brand = (await page.locator('.brand').boundingBox())!, stats = (await page.locator('.level-header').boundingBox())!;
+    const settings = (await page.locator('#settings').boundingBox())!;
+    expect(stats.x).toBeGreaterThanOrEqual(brand.x + brand.width);
+    expect(stats.x + stats.width).toBeLessThanOrEqual(settings.x);
     for (const selector of ['#undo', '#retry', '#hint']) {
       const button = page.locator(selector);
       await expect.poll(() => button.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(height - 56 - bottom - 12);

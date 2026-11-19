@@ -5,18 +5,18 @@ A cozy 3D bus traffic puzzle, built with TypeScript, Three.js/WebGL, Tailwind CS
 ## Play
 
 - Click or tap a bus. It drives **forward along its roof arrow**, including diagonal directions.
-- A blocked bus animates a bump, then returns to its original position.
+- A blocked bus bumps and returns to its spot. Supported phones give a short vibration at impact. The win screen counts bumps across the route, including bumps before an undo.
 - A clear bus travels around the depot border to one of **five unlocked stops**.
 - Two independently shuffled overflow lines alternate to refill every vacated space in the 24-person middle group.
 - **Anyone in the middle group** can board a matching bus. Matching passengers board together, then both side lines refill the middle together.
 - A full bus leaves and releases its stop. **Every bus gone = you win.**
 - Send several clear buses in quick succession. Each reserves its own stop immediately. Buses choose the quickest available stop and either direction around the border; booked trajectories keep crossing and opposing traffic clear.
-- If all stops fill without a match anywhere in the middle group, undo a dispatch or restart.
+- With Sound enabled, tapping another parked bus when all five stops are reserved plays a descending two-note cue. If all stops fill without a match anywhere in the middle group, undo a dispatch or restart.
 - Undo, restart, and hints stay on the game screen. Install sits at the lower left. The floating gear menu contains sound, double speed, help, the keyboard bus list, and saved-progress status. Preferences persist on this device.
 
 Layouts pack a screen-shaped rectangular yard with an irregular mix of horizontal, vertical, and diagonal buses. New buses are placed with a clear forward exit, so reversing insertion order guarantees a solution. Each new game and restart shuffles both feeders independently; reloading preserves their saved order. Passengers are mixed in batches of four buses from the exit solution, so clearing one batch before the next remains a winning strategy with the smaller middle group. Collision checks use the rotated bus bodies. All six colors are available, and passenger totals exactly match the bus capacities. Desktop and mobile share the same camera and a full-viewport canvas with minimal overlays. The depot restores the original cream-and-sage setting with brighter buses, short curved feeder queues (six rows each), flowers, and a shelter. Larger passengers stand in wider-spaced, compact queues, while compact buses and matching collision bodies fill a taller yard on phones and a wider yard on desktop. New routes fit the available screen; resizing preserves parked positions on an active route. Yellow buses use a bright, lightly toasted yellow; outlined white arrows remain legible on the brighter yellow and pink roofs. Red is warmer and pink is lighter so their passengers and buses are easier to distinguish. The keyboard bus list scrolls inside Settings while the scene remains visible.
 
-The border road, bay dimensions, and bay spacing follow the bus scale. Compact bays and a shorter approach pull the passenger plaza closer to the yard; tighter camera framing gives the jam more screen space. Turning clearance still accommodates the longest bus, and changing the depot framing preserves active saved progress.
+Buses share one lane around the yard. Its inside edge leaves room for the longest bus to turn, and the stops have a separate apron. New routes use the space between the header and bottom controls to fit more parked buses. An active route keeps its existing buses and saved positions.
 
 ## Run locally
 

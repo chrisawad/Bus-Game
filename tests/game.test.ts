@@ -39,6 +39,12 @@ describe('dense depot and group boarding', () => {
     expect(blocked.status).toBe('yard');
     expect(game.availableStops).toHaveLength(STOP_COUNT);
     expect(game.state.moves).toBe(0);
+    expect(game.state.bumps).toBe(1);
+    game.dispatch(game.movable.at(-1)!.id);
+    game.dispatch(game.state.buses.find(b => collisionFor(b, game.state.buses))!.id);
+    expect(game.undo()).toBe(true);
+    expect(game.state.moves).toBe(0);
+    expect(game.state.bumps).toBe(2);
   });
   it('boards matching people anywhere in the middle, even behind another color', () => {
     const game = new Game();
