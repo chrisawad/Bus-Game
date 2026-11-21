@@ -34,8 +34,10 @@ const el = <T extends HTMLElement>(selector: string) => document.querySelector<T
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
 function playArea() {
   const board = el('#scene').getBoundingClientRect();
-  const top = Math.max(el('.level-header').getBoundingClientRect().bottom, el('.site-header').getBoundingClientRect().bottom) - board.top + 4;
-  const bottom = board.bottom - el('.control-bar').getBoundingClientRect().top + 4;
+  const overlaps = (box: DOMRect) => box.right > board.left && box.left < board.right && box.width > 0;
+  const boxes = (selectors: string) => Array.from(document.querySelectorAll(selectors), node => node.getBoundingClientRect()).filter(overlaps);
+  const top = Math.max(0, ...boxes('.brand, .level-header, #settings').map(box => box.bottom - board.top)) + 4;
+  const bottom = Math.max(0, ...boxes('.control-bar, #install').map(box => board.bottom - box.top)) + 4;
   return { width: Math.max(1, board.width - 8), height: Math.max(1, board.height - top - bottom), centerOffset: (top - bottom) / 2 };
 }
 function currentYard() {
@@ -229,6 +231,19 @@ function updateControls() {
   el('#speed-value').textContent = progress.fast ? '2×' : '1×';
   el('#speed').setAttribute('aria-pressed', String(progress.fast));
 }
+function syncBusView(button: HTMLButtonElement, bus: Bus) {
+  const direction = scene.screenDirection(bus.direction);
+  const arrow = { N: '↑', NE: '↗', E: '→', SE: '↘', S: '↓', SW: '↙', W: '←', NW: '↖' }[direction];
+  const heading = { N: 'north', NE: 'northeast', E: 'east', SE: 'southeast', S: 'south', SW: 'southwest', W: 'west', NW: 'northwest' }[direction];
+  const label = PALETTE[bus.color].symbol + ' ' + PALETTE[bus.color].name + ' ' + arrow + ' · ' +
+    (bus.status === 'yard' ? bus.capacity + ' seats' : bus.filled + '/' + bus.capacity);
+  if (button.textContent !== label) button.textContent = label;
+  button.setAttribute('aria-label', PALETTE[bus.color].name + ' bus ' + (Number(bus.id.slice(4)) + 1) + ', facing ' +
+    heading + ', ' + bus.capacity + ' seats, ' +
+    (bus.status === 'yard' ? (clearExits.get(bus.id) ? 'clear exit' : 'blocked exit') : bus.status));
+  const screen = scene.busScreenPosition(bus.id);
+  if (screen) { button.dataset.screenX = String(screen.x); button.dataset.screenY = String(screen.y); }
+}
 function sync(celebrateWin = false) {
   scene.state = game.state; scene.dirty = true;
   const s = game.state;
@@ -258,15 +273,7 @@ function sync(celebrateWin = false) {
     button.dataset.status = bus.status; button.dataset.color = bus.color;
     button.style.setProperty('--bus-color', PALETTE[bus.color].hex);
     button.disabled = bus.status !== 'yard'; button.hidden = bus.status === 'gone';
-    const dir = { N: '↑', NE: '↗', E: '→', SE: '↘', S: '↓', SW: '↙', W: '←', NW: '↖' }[bus.direction];
-    const label = PALETTE[bus.color].symbol + ' ' + PALETTE[bus.color].name + ' ' + dir + ' · ' +
-      (bus.status === 'yard' ? bus.capacity + ' seats' : bus.filled + '/' + bus.capacity);
-    if (button.textContent !== label) button.textContent = label;
-    button.setAttribute('aria-label', PALETTE[bus.color].name + ' bus ' + (Number(bus.id.slice(4)) + 1) + ', facing ' +
-      { N: 'north', NE: 'northeast', E: 'east', SE: 'southeast', S: 'south', SW: 'southwest', W: 'west', NW: 'northwest' }[bus.direction] + ', ' + bus.capacity + ' seats, ' +
-      (bus.status === 'yard' ? (clear ? 'clear exit' : 'blocked exit') : bus.status));
-    const screen = scene.busScreenPosition(bus.id);
-    if (screen) { button.dataset.screenX = String(screen.x); button.dataset.screenY = String(screen.y); }
+    syncBusView(button, bus);
   }
   if (!boardingInProgress) scene.syncPeople();
   updateControls(); persist();
@@ -342,14 +349,14 @@ function showDialog(kind: NonNullable<typeof modal>) {
   const content = el('#dialog-content'); el('#dialog-close').hidden = kind === 'jammed' || kind === 'won';
   if (kind === 'level') {
     // Measure the play area before focusing the number field opens a phone keyboard.
-    const yard = currentYard(), boardWidth = el('#scene').clientWidth;
+    const yard = currentYard(), shellWidth = el('.app-shell').clientWidth;
     content.innerHTML = '<h2 id="dialog-title">Change level</h2><form id="level-form">' +
       '<label for="level-number">Level number</label><input id="level-number" name="level" type="number" inputmode="numeric" min="1" max="9999" step="1" required autofocus>' +
       '<button type="submit" class="dialog-primary">Play level</button>' +
       '<button type="button" class="dialog-secondary" data-action="close">Cancel</button></form>';
     const input = el<HTMLInputElement>('#level-number'); input.valueAsNumber = game.state.level;
     el('#level-form').addEventListener('submit', event => {
-      event.preventDefault(); void restart(input.valueAsNumber, true, boardWidth === el('#scene').clientWidth ? yard : undefined);
+      event.preventDefault(); void restart(input.valueAsNumber, true, shellWidth === el('.app-shell').clientWidth ? yard : undefined);
     });
   } else if (kind === 'help') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('bus') + '</div><div class="eyebrow">WELCOME TO THE DEPOT</div><h2 id="dialog-title">A busload of possibility.</h2>' +
@@ -469,8 +476,15 @@ try {
   if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast, winVoice: saved.winVoice === true });
   game = new Game(state.level, state);
   scene = new DepotScene(el('#scene'), game.state, selectBus, playArea);
-  for (const selector of ['.site-header', '.level-header', '.control-bar']) scene.resizeObserver.observe(el(selector));
+  for (const selector of ['.site-header', '.level-header', '.control-bar', '#install']) scene.resizeObserver.observe(el(selector));
   await scene.reset(game.state);
+  scene.onViewSettled = () => {
+    if (transitioning) return;
+    for (const bus of game.state.buses) {
+      const button = el<HTMLButtonElement>('[data-bus-id="' + bus.id + '"]');
+      if (button) syncBusView(button, bus);
+    }
+  };
   scene.onHover = (bus: Bus | null) => {
     if (!modal) el('#scene').setAttribute('title', bus ? PALETTE[bus.color].name + ' bus · ' + bus.capacity + ' seats · Click to drive' : '');
   };
@@ -483,7 +497,11 @@ try {
     const realDt = Math.min((now - previous) / 1000, .5); previous = now;
     if (!document.hidden) {
       const dt = realDt * (progress.fast ? 2 : 1);
-      if (!transitioning && (!modal || modal === 'won')) scene.update(dt);
+      if (!transitioning) {
+        scene.advanceView(now);
+        if (!modal || modal === 'won') scene.update(dt);
+        else if (scene.dirty) scene.render();
+      }
       showPendingNotice();
       if (!transitioning && !modal && !boardingInProgress) {
         boardingClock += dt;

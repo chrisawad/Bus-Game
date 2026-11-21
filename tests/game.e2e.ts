@@ -90,6 +90,67 @@ test('preserves parked positions on resize and fits a new rectangle on restart',
   expect((await read(page)).active.yard).toEqual(restarted.active.yard);
   expect((await read(page)).active.crowdSeed).toEqual(restarted.active.crowdSeed);
 });
+test('turns the same depot, keeps taps aligned, and finishes a trip across rotation', async ({ page }, info) => {
+  const portrait = { width: 390, height: 844 }, landscape = { width: 844, height: 390 };
+  const startsTall = info.project.name === 'mobile';
+  const start = startsTall ? portrait : landscape, rotated = startsTall ? landscape : portrait;
+  if (!startsTall) await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize(start);
+  await openDepot(page);
+  const original = (await read(page)).active;
+  const idle = page.locator('[data-status="yard"][data-clear="false"]').first();
+  const id = (await idle.getAttribute('data-bus-id'))!;
+  const fixed = page.locator('[data-bus-id="' + id + '"]');
+  const initialLabel = (await fixed.getAttribute('aria-label'))!;
+  const headingIn = (label: string) => new RegExp('facing ' + label.split(', facing ')[1].split(',')[0] + ',');
+  const points = () => page.locator('[data-bus-id]').evaluateAll(nodes => nodes.map(n => {
+    const { screenX, screenY } = (n as HTMLElement).dataset;
+    return { x: Number(screenX), y: Number(screenY) };
+  }));
+  const before = await points();
+  await page.setViewportSize(rotated);
+  await expect(fixed).not.toHaveAttribute('aria-label', initialLabel);
+  const rotatedLabel = (await fixed.getAttribute('aria-label'))!;
+  const after = await points();
+  // A long baseline between two parked roofs turns through 90 degrees in
+  // world space. The oblique camera foreshortens its vertical component.
+  const first = before.findIndex(p => p.x === Math.min(...before.map(q => q.x)));
+  const last = before.findIndex(p => p.x === Math.max(...before.map(q => q.x)));
+  const a = { x: before[last].x - before[first].x, y: before[last].y - before[first].y };
+  const b = { x: after[last].x - after[first].x, y: after[last].y - after[first].y };
+  expect(Math.abs(a.x * b.x + a.y * b.y) / (Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y))).toBeLessThan(.26);
+  expect((await read(page)).active).toEqual(original);
+  await page.screenshot({ path: info.outputPath('rotated-depot.png') });
+  await canvasClick(page, id);
+  await expect.poll(async () => (await read(page)).active.bumps).toBe(1);
+  const clear = page.locator('[data-status="yard"][data-clear="true"][data-matches="true"]').first();
+  const sent = (await clear.getAttribute('data-bus-id'))!;
+  await canvasClick(page, sent);
+  await page.setViewportSize(start);
+  await expect(fixed).toHaveAttribute('aria-label', headingIn(initialLabel));
+  await expect.poll(async () => (await read(page)).active.boarded).toBeGreaterThan(0);
+  await expect(page.locator('#scene')).toHaveAttribute('data-in-transit', '0');
+  await expect(page.locator('#scene')).toHaveAttribute('data-boarding', 'false');
+  expect((await read(page)).active.moves).toBe(1);
+  await expect(page.locator('[data-bus-id="' + sent + '"]')).not.toHaveAttribute('data-status', 'yard');
+
+  await page.setViewportSize(rotated);
+  // Clearing a neighboring bus can change this bus's exit status.
+  await expect(fixed).toHaveAttribute('aria-label', headingIn(rotatedLabel));
+  const saved = (await read(page)).active;
+  await expect(page.locator('#undo')).toBeEnabled();
+  await page.reload();
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  await expect(fixed).toHaveAttribute('aria-label', headingIn(rotatedLabel));
+  expect((await read(page)).active).toEqual(saved);
+
+  const almostSquare = startsTall ? { width: 620, height: 640 } : { width: 640, height: 620 };
+  await page.setViewportSize(almostSquare);
+  await expect(fixed).toHaveAttribute('aria-label', headingIn(initialLabel));
+  await page.setViewportSize({ width: almostSquare.height, height: almostSquare.width });
+  await expect(fixed).toHaveAttribute('aria-label', headingIn(rotatedLabel));
+  expect((await read(page)).active).toEqual(saved);
+});
 test('boards people behind another color and refills both sides in a group', async ({ page }, info) => {
   await openDepot(page);
   const before = await read(page), front = before.active.queue[0];

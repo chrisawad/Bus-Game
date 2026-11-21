@@ -46,6 +46,16 @@ export function createDepotLayout(yard: YardSize) {
     ROAD_NORTH_Z, ROAD_SOUTH_Z, WORLD_NORTH_Z, WORLD_SOUTH_Z, WORLD_CENTER_Z, frameWidth, frameHeight, plazaWidthRatio };
 }
 
+// Orthographic bounds while orbiting the depot. World-space traffic and seats
+// never move with the camera. The extra height clears the roof and plinth.
+export function depotViewScale(layout: ReturnType<typeof createDepotLayout>, angle: number, width: number, height: number) {
+  const depth = layout.WORLD_SOUTH_Z - layout.WORLD_NORTH_Z;
+  const x = Math.abs(Math.cos(angle)), z = Math.abs(Math.sin(angle));
+  const spanX = x * layout.frameWidth + z * depth;
+  const spanY = (z * layout.frameWidth + x * depth) * GROUND_PROJECTION + NORTH_OVERHANG + SOUTH_OVERHANG;
+  return Math.min(width / spanX, height / spanY);
+}
+
 // The camera fits the whole depot. Fit a smaller depot for small fleets so the
 // same world units enlarge buses, people, hit targets and collision geometry together.
 export function yardForLevel(level: number, available: YardSize): YardSize {

@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BUS_SCALE, VISIBLE_PER_LINE, PALETTE, VECTOR, directionAngle, type Bus, type BusColor, type GameState, type Person } from './game';
+import { BUS_SCALE, VISIBLE_PER_LINE, PALETTE, VECTOR, directionAngle, type Bus, type BusColor, type Direction, type GameState, type Person } from './game';
 import { Traffic, createDepotLayout, DOCK_X, BAY_WIDTH, BAY_LENGTH, YARD_TOP, arrivalRoute, departureRoutes, yardPosition, type DepotLayout, type Point } from './traffic';
 import { yieldToBrowser } from './scheduling';
 import { distanceToOutline } from './picking';
-import { CAMERA_RISE, CAMERA_RUN, FRAME_CENTER_Y, YARD_RIM } from './yard';
+import { CAMERA_RISE, CAMERA_RUN, FRAME_CENTER_Y, YARD_RIM, depotViewScale } from './yard';
 const v = (x: number, z: number, y = 0) => new THREE.Vector3(x, y, z);
 const PERSON_SCALE = 1.75;
+const QUARTER_TURN = -Math.PI / 2;
+const compass: Direction[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const ease = (t: number) => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 const materialCache = new Map<string, THREE.MeshStandardMaterial>();
 function material(color: string) {
@@ -187,6 +189,12 @@ export class DepotScene {
   peopleMoving = true;
   viewWidth = 1;
   viewHeight = 1;
+  private space = { width: 0, height: 0, centerOffset: 0 };
+  private viewportWidth = 0;
+  private viewAngle = 0;
+  private targetAngle = 0;
+  private turn?: { from: number; start: number };
+  onViewSettled?: () => void;
   reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   onSelect: (id: string) => void;
   onHover?: (bus: Bus | null) => void;
@@ -355,23 +363,56 @@ export class DepotScene {
       if (creating && performance.now() >= deadline) { await yieldToBrowser(); deadline = performance.now() + 8; }
     }
     this.syncPeople(true);
-    this.resize();
+    this.resize(changed);
   }
-  resize() {
+  resize(snap = false) {
     const width = this.mount.clientWidth, height = this.mount.clientHeight;
     if (!width || !height) return;
+    const initial = !this.space.width;
+    const keyboardResize = this.viewportWidth === window.innerWidth && document.activeElement?.id === 'level-number';
+    this.viewportWidth = window.innerWidth;
     if (width !== this.viewWidth || height !== this.viewHeight) this.renderer.setSize(width, height);
-    this.viewWidth = width; this.viewHeight = height; this.dirty = true;
-    const { WORLD_CENTER_Z, frameWidth, frameHeight } = this.layout;
-    this.camera.position.set(0, CAMERA_RISE, WORLD_CENTER_Z + CAMERA_RUN);
+    this.viewWidth = width; this.viewHeight = height;
+    this.space = this.playArea();
+    if (!keyboardResize || initial || snap) {
+      // Derive the home view from the saved depot, even when reopening on
+      // another screen. Only an orientation change turns an existing route.
+      const wideDepot = this.layout.frameWidth > this.layout.frameHeight;
+      const landscape = matchMedia('(orientation: landscape)').matches;
+      const next = wideDepot === landscape ? 0 : QUARTER_TURN;
+      if (next !== this.targetAngle) {
+        this.presses.clear(); this.pointerLeave();
+        this.targetAngle = next;
+        this.turn = { from: this.viewAngle, start: performance.now() };
+      }
+    }
+    if (initial || snap || this.reduced) { this.viewAngle = this.targetAngle; this.turn = undefined; }
+    this.fitCamera();
+  }
+  advanceView(now: number) {
+    if (!this.turn) return;
+    const t = THREE.MathUtils.clamp((now - this.turn.start) / 340, 0, 1);
+    this.viewAngle = THREE.MathUtils.lerp(this.turn.from, this.targetAngle, ease(t));
+    if (t === 1) { this.viewAngle = this.targetAngle; this.turn = undefined; }
+    this.fitCamera();
+  }
+  screenDirection(direction: Direction) {
+    const offset = Math.round(this.viewAngle / (Math.PI / 4));
+    return compass[(compass.indexOf(direction) + offset + 8) % 8];
+  }
+  private fitCamera() {
+    const { WORLD_CENTER_Z } = this.layout;
+    const { width, height, centerOffset } = this.space;
+    this.camera.position.set(Math.sin(this.viewAngle) * CAMERA_RUN, CAMERA_RISE, WORLD_CENTER_Z + Math.cos(this.viewAngle) * CAMERA_RUN);
     this.camera.lookAt(0, 0, WORLD_CENTER_Z);
     this.camera.updateMatrixWorld();
-    const space = this.playArea();
-    const scale = Math.min(space.width / frameWidth, space.height / frameHeight);
-    const centerY = FRAME_CENTER_Y + space.centerOffset / scale;
-    this.camera.left = -width / (2 * scale); this.camera.right = -this.camera.left;
-    this.camera.top = centerY + height / (2 * scale); this.camera.bottom = centerY - height / (2 * scale);
+    const scale = depotViewScale(this.layout, this.viewAngle, width, height);
+    const centerY = FRAME_CENTER_Y + centerOffset / scale;
+    this.camera.left = -this.viewWidth / (2 * scale); this.camera.right = -this.camera.left;
+    this.camera.top = centerY + this.viewHeight / (2 * scale); this.camera.bottom = centerY - this.viewHeight / (2 * scale);
     this.camera.updateProjectionMatrix();
+    this.dirty = true;
+    if (!this.turn) this.onViewSettled?.();
   }
   hit(event: PointerEvent) {
     const rect = this.renderer.domElement.getBoundingClientRect();
@@ -647,6 +688,9 @@ export class DepotScene {
       p.mesh.rotation.x += dt * 4; p.mesh.rotation.z += dt * 5;
       p.mesh.scale.setScalar(p.life / p.max);
     }
+    this.render();
+  }
+  render() {
     const pressedIds = new Set([...this.presses.values()].map(press => press.id));
     for (const bus of this.state.buses) {
       const visual = this.buses.get(bus.id)!;
