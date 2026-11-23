@@ -1,7 +1,74 @@
 import { test, expect } from '@playwright/test';
 const key = 'bus-jam-v1';
+const expectedShareUrl = 'https://buses.chrisawad.com/';
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('bus-jam-install-dismissed', '1'));
+});
+
+test('Share keeps its icon and label visible and sends the public game URL', async ({ page }, info) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: async (data: ShareData) => {
+      sessionStorage.setItem('shared', JSON.stringify(data));
+    } });
+  });
+  await page.goto('./?preview=local#level');
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  const share = page.getByRole('banner').getByRole('button', { name: 'Share', exact: true });
+  const viewport = page.viewportSize()!;
+  for (const size of [viewport, { width: 320, height: 640 }, { width: 375, height: 812 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(size);
+    await expect(share.locator('svg')).toBeVisible();
+    await expect(share.locator('svg circle')).toHaveCount(3);
+    await expect(share.locator('span')).toHaveText('Share');
+    const icon = (await share.locator('svg').boundingBox())!, label = (await share.locator('span').boundingBox())!;
+    expect(label.x).toBeGreaterThan(icon.x + icon.width);
+    expect(label.y).toBeLessThan(icon.y + icon.height);
+    const box = (await share.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(size.width);
+    for (const selector of ['.brand', '.level-header', '#settings']) {
+      const other = (await page.locator(selector).boundingBox())!;
+      expect(box.x >= other.x + other.width || other.x >= box.x + box.width ||
+        box.y >= other.y + other.height || other.y >= box.y + box.height).toBe(true);
+    }
+    await page.evaluate(() => sessionStorage.removeItem('shared'));
+    await share.click();
+    expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('shared')!))).toEqual({
+      title: 'Bus Jam', url: expectedShareUrl,
+    });
+    if (size === viewport) await page.screenshot({ path: info.outputPath('share-header.png') });
+  }
+});
+
+test('Share respects cancellation and offers the public link when native sharing is unavailable', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+    Object.defineProperty(navigator, 'share', { configurable: true, value: async () => { throw new DOMException('Cancelled', 'AbortError'); } });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (text: string) => sessionStorage.setItem('copied', text),
+    } });
+  });
+  await page.goto('./?preview=local#level');
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  const share = page.getByRole('button', { name: 'Share', exact: true });
+  await share.click();
+  expect(await page.evaluate(() => sessionStorage.getItem('copied'))).toBeNull();
+  await expect(page.locator('#dialog')).toBeHidden();
+  await page.evaluate(() => { Object.defineProperty(navigator, 'share', { configurable: true, value: undefined }); });
+  await share.focus(); await share.press('Enter');
+  await expect(page.locator('#status')).toHaveText('Bus Jam link copied.');
+  expect(await page.evaluate(() => sessionStorage.getItem('copied'))).toBe(expectedShareUrl);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new DOMException('Denied', 'NotAllowedError'); } } });
+  });
+  await share.click();
+  const link = page.getByLabel('Copy this game link');
+  await expect(link).toBeFocused();
+  await expect(link).toHaveValue(expectedShareUrl);
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(share).toBeFocused();
 });
 
 test('changes levels from the badge or Settings and restores a parked route', async ({ page }) => {

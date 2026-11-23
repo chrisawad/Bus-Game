@@ -26,17 +26,19 @@ const icons: Record<string, string> = {
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   cloud: '<path d="M7 18a5 5 0 1 1 0-10 7 7 0 0 1 13 2 4 4 0 0 1-1 8M9 16l2 2 4-4"/>',
   download: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4m-6.8 7 6.8 4"/>',
   speed: '<path d="m3 5 9 7-9 7V5Zm10 0 9 7-9 7V5Z"/>',
   settings: '<path d="m9 3 .6 2.2-2 .9L5.5 5 3 9.3l1.6 1.5v2.4L3 14.7 5.5 19l2.1-1.1 2 .9L10.2 21h4l.6-2.2 2-.9 2.1 1.1 2.5-4.3-1.6-1.5v-2.4l1.6-1.5L18.9 5l-2.1 1.1-2-.9L14.2 3H9Z"/><circle cx="12" cy="12" r="3"/>',
 };
 const icon = (name: string) => '<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || '') + '</svg>';
 const el = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+const publicGameUrl = 'https://buses.chrisawad.com/';
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
 function playArea() {
   const board = el('#scene').getBoundingClientRect();
   const overlaps = (box: DOMRect) => box.right > board.left && box.left < board.right && box.width > 0;
   const boxes = (selectors: string) => Array.from(document.querySelectorAll(selectors), node => node.getBoundingClientRect()).filter(overlaps);
-  const top = Math.max(0, ...boxes('.brand, .level-header, #settings').map(box => box.bottom - board.top)) + 4;
+  const top = Math.max(0, ...boxes('.brand, .level-header, .header-actions').map(box => box.bottom - board.top)) + 4;
   const bottom = Math.max(0, ...boxes('.control-bar, #install').map(box => board.bottom - box.top)) + 4;
   return { width: Math.max(1, board.width - 8), height: Math.max(1, board.height - top - bottom), centerOffset: (top - bottom) / 2 };
 }
@@ -53,7 +55,7 @@ let graphicsFailed = false;
 let yardKey = '';
 const clearExits = new Map<string, boolean>();
 let boardingInProgress = false, boardingClock = 0, lastPhase = '';
-let modal: 'help' | 'level' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | null = null;
+let modal: 'help' | 'level' | 'retry' | 'won' | 'jammed' | 'install' | 'install-offer' | 'update' | 'share' | null = null;
 let messageTimer: ReturnType<typeof setTimeout>;
 let audioContext: AudioContext | undefined;
 let audioReady = false;
@@ -64,27 +66,28 @@ try { installPrompted = sessionStorage.getItem('bus-jam-install-dismissed') === 
 
 el('#app').innerHTML = `
 <div class="app-shell">
-  <header class="site-header flex items-center justify-between">
+  <header class="site-header">
     <a class="brand flex items-center gap-3" href="./" aria-label="Bus Jam home" title="Bus Jam">
       <span class="brand-mark">${icon('bus')}</span>
       <span>Bus <span class="brand-light">Jam</span><span class="brand-period">.</span></span>
     </a>
-    <div class="header-actions flex items-center gap-2">
+    <div class="level-header flex items-center justify-between">
+      <div class="flex items-center gap-3"><button class="level-badge" id="level-badge" type="button" aria-label="Change level" aria-haspopup="dialog" title="Change level">01</button>
+        <div><div class="eyebrow level-eyebrow">LEVEL</div><h1 id="level-name"></h1></div>
+      </div>
+      <div class="level-stats flex items-center">
+        <div><span class="stat-label">BUSES LEFT</span><strong id="buses-left"></strong></div>
+        <span class="stat-divider"></span>
+        <div><span class="stat-label">BOARDED</span><strong><span id="boarded">0</span><span class="stat-total" id="total"></span></strong></div>
+      </div>
+    </div>
+    <div class="header-actions flex items-center">
+      <button class="share-button" id="share" type="button">${icon('share')}<span>Share</span></button>
       <button class="icon-button settings-trigger" id="settings" type="button" popovertarget="settings-panel" aria-controls="settings-panel" aria-expanded="false" aria-label="Settings">${icon('settings')}</button>
     </div>
   </header>
   <main class="game-layout">
     <section class="play-column" aria-label="Bus puzzle">
-      <div class="level-header flex items-center justify-between">
-        <div class="flex items-center gap-3"><button class="level-badge" id="level-badge" type="button" aria-label="Change level" aria-haspopup="dialog" title="Change level">01</button>
-          <div><div class="eyebrow level-eyebrow">LEVEL</div><h1 id="level-name"></h1></div>
-        </div>
-        <div class="level-stats flex items-center">
-          <div><span class="stat-label">BUSES LEFT</span><strong id="buses-left"></strong></div>
-          <span class="stat-divider"></span>
-          <div><span class="stat-label">BOARDED</span><strong><span id="boarded">0</span><span class="stat-total" id="total"></span></strong></div>
-        </div>
-      </div>
       <div class="board-card">
         <span class="sr-only" id="stops-status"></span>
         <div id="scene" class="scene" aria-busy="true"></div>
@@ -358,6 +361,10 @@ function showDialog(kind: NonNullable<typeof modal>) {
     el('#level-form').addEventListener('submit', event => {
       event.preventDefault(); void restart(input.valueAsNumber, true, shellWidth === el('.app-shell').clientWidth ? yard : undefined);
     });
+  } else if (kind === 'share') {
+    content.innerHTML = '<h2 id="dialog-title">Share Bus Jam</h2><label for="share-link">Copy this game link</label>' +
+      '<input id="share-link" type="url" readonly autofocus value="' + publicGameUrl + '">' +
+      '<button class="dialog-primary" data-action="close">Done</button>';
   } else if (kind === 'help') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('bus') + '</div><div class="eyebrow">WELCOME TO THE DEPOT</div><h2 id="dialog-title">A busload of possibility.</h2>' +
       '<p>Clear every bus to finish your route. Here’s how:</p><ol class="help-rules">' +
@@ -409,6 +416,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
     }
   }));
   dialog.showModal();
+  if (kind === 'share') el<HTMLInputElement>('#share-link').select();
 }
 function closeDialog() { stopCelebration(); el<HTMLDialogElement>('#dialog').close(); modal = null; }
 el('#dialog').addEventListener('close', () => { if (!el<HTMLDialogElement>('#dialog').open) { stopCelebration(); modal = null; } });
@@ -417,6 +425,21 @@ el<HTMLDialogElement>('#dialog').addEventListener('cancel', event => {
   if (modal === 'jammed' || modal === 'won') event.preventDefault(); else modal = null;
 });
 el('#help').addEventListener('click', () => showDialog('help')); el('#retry').addEventListener('click', () => showDialog('retry'));
+el('#share').addEventListener('click', async () => {
+  const data = { title: 'Bus Jam', url: publicGameUrl };
+  if (navigator.share && (!navigator.canShare || navigator.canShare(data))) {
+    try { await navigator.share(data); return; }
+    catch (error) { if (error instanceof DOMException && error.name === 'AbortError') return; }
+  }
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(publicGameUrl);
+      say('Bus Jam link copied.');
+      return;
+    } catch { /* The link can still be copied by hand. */ }
+  }
+  if (!modal) showDialog('share');
+});
 for (const id of ['#level-badge', '#choose-level']) el(id).addEventListener('click', () => showDialog('level'));
 el('#undo').addEventListener('click', doUndo);
 el('#hint').addEventListener('click', () => {

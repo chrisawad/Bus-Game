@@ -4,6 +4,8 @@ A cozy 3D bus traffic puzzle, built with TypeScript, Three.js/WebGL, Tailwind CS
 
 ## Play
 
+[Play Bus Jam](https://buses.chrisawad.com/)
+
 - Click or tap a bus. It drives **forward along its roof arrow**, including diagonal directions.
 - A blocked bus bumps and returns to its spot. Supported phones give a short vibration at impact. The win screen counts bumps across the route, including bumps before an undo.
 - A clear bus travels around the depot border to one of **five unlocked stops**.
@@ -59,7 +61,7 @@ The workflow in `.github/workflows/pages.yml` tests, builds, checks the producti
 
 The workflow reads the Pages base path automatically, supporting both a repository subdirectory and a root user site. For other static hosting, upload `dist/`. Set `BASE_PATH` before building to target a specific subpath; the default is relative URLs.
 
-The published game is https://chrisawad.github.io/Bus-Game/. This workspace does not use ChatGPT Sites. Plain HTTP LAN or Tailscale URLs support play, but use the HTTPS Pages address for installation and offline support.
+GitHub Pages serves the installed game under its existing `/Bus-Game/` scope. This workspace does not use ChatGPT Sites. Plain HTTP LAN or Tailscale URLs support play. Use HTTPS for installation and offline support.
 
 ## Docker / Nginx
 
