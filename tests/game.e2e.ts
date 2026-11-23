@@ -43,11 +43,12 @@ test('shows the warm depot, short feeder queues, and real diagonal buses', async
   else expect(yard.width).toBeGreaterThan(yard.height);
   await expect(page.locator('.stops-label')).toHaveCount(0);
   await expect(page.locator('#status-strip')).toBeHidden();
-  const counter = await page.locator('.level-header').boundingBox();
+  const counter = (await page.locator('.level-header').boundingBox())!;
   await expect(page.getByText('BOARDED', { exact: true })).toBeVisible();
   await expect(page.locator('#boarded')).toHaveText('0');
-  const actions = await page.locator('.header-actions').boundingBox();
-  expect(counter!.x + counter!.width).toBeLessThan(actions!.x);
+  const actions = (await page.locator('.header-actions').boundingBox())!;
+  expect(counter.x + counter.width < actions.x || counter.y + counter.height < actions.y ||
+    actions.y + actions.height < counter.y).toBe(true);
   expect(save.active.queue).toHaveLength(24);
   expect(save.active.buses).toHaveLength(20);
   expect(save.active.totalPassengers).toBe(save.active.buses.reduce((sum: number, b: { capacity: number }) => sum + b.capacity, 0));
@@ -129,6 +130,8 @@ test('turns the same depot, keeps taps aligned, and finishes a trip across rotat
   await page.setViewportSize(start);
   await expect(fixed).toHaveAttribute('aria-label', headingIn(initialLabel));
   await expect.poll(async () => (await read(page)).active.boarded).toBeGreaterThan(0);
+  // A refill can supply another boarding wave after the first animation ends.
+  await expect(page.locator('[data-bus-id]:is([data-status="arriving"], [data-status="leaving"], [data-status="docked"][data-matches="true"])')).toHaveCount(0);
   await expect(page.locator('#scene')).toHaveAttribute('data-in-transit', '0');
   await expect(page.locator('#scene')).toHaveAttribute('data-boarding', 'false');
   expect((await read(page)).active.moves).toBe(1);
