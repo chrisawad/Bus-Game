@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => sessionStorage.setItem('bus-jam-install-dismissed', '1'));
 });
 
-test('Share keeps its icon and label visible and sends the public game URL', async ({ page }, info) => {
+test('Share stays at the lower left, keeps stats centered and sends the public game URL', async ({ page }, info) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
     Object.defineProperty(navigator, 'share', { configurable: true, value: async (data: ShareData) => {
@@ -14,10 +14,11 @@ test('Share keeps its icon and label visible and sends the public game URL', asy
   });
   await page.goto('./?preview=local#level');
   await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
-  const share = page.getByRole('banner').getByRole('button', { name: 'Share', exact: true });
+  const share = page.getByRole('main').getByRole('button', { name: 'Share', exact: true });
   const viewport = page.viewportSize()!;
-  for (const size of [viewport, { width: 320, height: 640 }, { width: 375, height: 812 }, { width: 844, height: 390 }]) {
+  for (const size of [viewport, { width: 320, height: 640 }, { width: 375, height: 812 }, { width: 568, height: 320 }, { width: 844, height: 390 }]) {
     await page.setViewportSize(size);
+    await expect.poll(() => share.evaluate(button => button.getBoundingClientRect().bottom)).toBeCloseTo(size.height - 12, 0);
     await expect(share.locator('svg')).toBeVisible();
     await expect(share.locator('svg circle')).toHaveCount(3);
     await expect(share.locator('span')).toHaveText('Share');
@@ -27,8 +28,11 @@ test('Share keeps its icon and label visible and sends the public game URL', asy
     const box = (await share.boundingBox())!;
     expect(box.height).toBeGreaterThanOrEqual(44);
     expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(size.width);
-    for (const selector of ['.brand', '.level-header', '#settings']) {
+    expect(box.x).toBeLessThan(20);
+    const stats = (await page.locator('.level-header').boundingBox())!;
+    expect(stats.x + stats.width / 2).toBeCloseTo(size.width / 2, 0);
+    expect(stats.y).toBeLessThan(20);
+    for (const selector of ['#install', '.control-bar']) {
       const other = (await page.locator(selector).boundingBox())!;
       expect(box.x >= other.x + other.width || other.x >= box.x + box.width ||
         box.y >= other.y + other.height || other.y >= box.y + box.height).toBe(true);
@@ -38,7 +42,7 @@ test('Share keeps its icon and label visible and sends the public game URL', asy
     expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('shared')!))).toEqual({
       title: 'Bus Jam', url: expectedShareUrl,
     });
-    if (size === viewport) await page.screenshot({ path: info.outputPath('share-header.png') });
+    if (size === viewport) await page.screenshot({ path: info.outputPath('share-controls.png') });
   }
 });
 
@@ -104,7 +108,7 @@ test('floating settings support keyboard dismissal, saved preferences, and help'
   await expect(panel).toBeHidden(); await expect(page.locator('#install')).toBeVisible();
   await expect(page.locator('.header-actions #install,.play-column #keyboard-panel')).toHaveCount(0);
   const installBox = await page.locator('#install').boundingBox(), controls = await page.locator('.control-bar').boundingBox();
-  expect(installBox!.x).toBeLessThan(25); expect(installBox!.y).toBeGreaterThan(page.viewportSize()!.height * .75);
+  expect(installBox!.y).toBeGreaterThan(page.viewportSize()!.height * .75);
   expect(installBox!.x + installBox!.width).toBeLessThan(controls!.x);
   await expect(page.locator('.control-bar #sound,.control-bar #speed')).toHaveCount(0);
   await trigger.focus(); await trigger.press('Enter');
@@ -168,7 +172,8 @@ test('bottom controls fit the visible viewport and clear the system navigation b
     const settings = (await page.locator('#settings').boundingBox())!;
     expect(stats.x >= brand.x + brand.width || stats.y >= brand.y + brand.height).toBe(true);
     expect(stats.x + stats.width).toBeLessThanOrEqual(settings.x);
-    for (const selector of ['#undo', '#retry', '#hint']) {
+    expect(stats.x + stats.width / 2).toBeCloseTo((width - right) / 2, 0);
+    for (const selector of ['#share', '#undo', '#retry', '#hint']) {
       const button = page.locator(selector);
       await expect.poll(() => button.evaluate(el => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(height - 56 - bottom - 12);
       const box = (await button.boundingBox())!;

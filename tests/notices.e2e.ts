@@ -24,12 +24,55 @@ test('offers installation once per session and resumes the puzzle after dismissa
   await expect.poll(async () => page.evaluate(key => JSON.parse(localStorage.getItem(key)!).active.moves, key)).toBe(1);
 });
 
+test('Android install help works in an in-app browser before and after installed-app detection', async ({ browser }, info) => {
+  const context = await browser.newContext({
+    viewport: info.project.use.viewport,
+    isMobile: info.project.use.isMobile,
+    hasTouch: info.project.use.hasTouch,
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel; wv) AppleWebKit/537.36 Chrome/140.0.0.0 Mobile Safari/537.36',
+  });
+  await context.addInitScript(() => {
+    sessionStorage.setItem('bus-jam-install-dismissed', '1');
+    Object.defineProperty(navigator, 'install', { value: undefined });
+    window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+    Object.defineProperty(navigator, 'getInstalledRelatedApps', { value: async () =>
+      sessionStorage.getItem('installed') ? [{ platform: 'webapp', id: new URL('./', document.baseURI).href }] : [] });
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto(info.project.use.baseURL!);
+    const dialog = page.getByRole('dialog', { name: 'Install Bus Jam' });
+    for (const installed of [false, true]) {
+      if (installed) {
+        await page.evaluate(() => sessionStorage.setItem('installed', '1'));
+        await page.reload();
+      }
+      await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+      await expect(page.locator('#install')).toBeVisible({ visible: !installed });
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      await page.getByRole('button', { name: 'How to install' }).click();
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect(dialog).toContainText('Open in Chrome');
+      await expect(dialog.getByRole('link', { name: 'buses.chrisawad.com' })).toHaveAttribute('href', 'https://buses.chrisawad.com/');
+      await expect(dialog).toContainText('paste it into Chrome');
+      await expect(dialog).toContainText('Add to Home screen');
+      await expect(dialog).toContainText('app drawer');
+      await dialog.getByRole('button', { name: 'Got it' }).click();
+      await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused();
+    }
+  } finally { await context.close(); }
+});
+
 test('suppresses the install offer when already installed and defers it behind other dialogs', async ({ browser }) => {
   const installed = await browser.newContext();
   await installed.addInitScript(() => Object.defineProperty(navigator, 'standalone', { value: true }));
   const app = await installed.newPage(); await app.goto(test.info().project.use.baseURL!);
   await expect(app.locator('#scene canvas')).toBeVisible(); await expect(app.locator('#install')).toBeHidden();
-  await expect(app.locator('#dialog')).not.toBeVisible(); await installed.close();
+  await expect(app.locator('#dialog')).not.toBeVisible();
+  await app.getByRole('button', { name: 'Settings', exact: true }).click();
+  await app.getByRole('button', { name: 'How to install' }).click();
+  await expect(app.getByRole('dialog', { name: 'Install Bus Jam' })).toBeVisible();
+  await installed.close();
   const context = await browser.newContext();
   await context.addInitScript(() => {
     const pending = new Promise(resolve => Reflect.set(window, 'finishInstallCheck', resolve));

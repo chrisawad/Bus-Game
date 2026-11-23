@@ -7,7 +7,7 @@ import { createWinCelebration } from './celebration';
 import { createWinAudio } from './win-audio';
 import { fitYard } from './yard';
 import { setupSettings } from './settings';
-import { setupInstall, installInstructions } from './install';
+import { setupInstall, installInstructions, publicGameUrl } from './install';
 import { prepareLevel } from './level-loader';
 import { afterPaint } from './scheduling';
 
@@ -32,14 +32,13 @@ const icons: Record<string, string> = {
 };
 const icon = (name: string) => '<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (icons[name] || '') + '</svg>';
 const el = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
-const publicGameUrl = 'https://buses.chrisawad.com/';
 const names = ['The morning shuffle', 'A colorful commute', 'Room for everyone', 'The scenic route', 'Rush-hour daydream', 'All aboard, again'];
 function playArea() {
   const board = el('#scene').getBoundingClientRect();
   const overlaps = (box: DOMRect) => box.right > board.left && box.left < board.right && box.width > 0;
   const boxes = (selectors: string) => Array.from(document.querySelectorAll(selectors), node => node.getBoundingClientRect()).filter(overlaps);
   const top = Math.max(0, ...boxes('.brand, .level-header, .header-actions').map(box => box.bottom - board.top)) + 4;
-  const bottom = Math.max(0, ...boxes('.control-bar, #install').map(box => board.bottom - box.top)) + 4;
+  const bottom = Math.max(0, ...boxes('.control-bar, .app-actions').map(box => board.bottom - box.top)) + 4;
   return { width: Math.max(1, board.width - 8), height: Math.max(1, board.height - top - bottom), centerOffset: (top - bottom) / 2 };
 }
 function currentYard() {
@@ -82,7 +81,6 @@ el('#app').innerHTML = `
       </div>
     </div>
     <div class="header-actions flex items-center">
-      <button class="share-button" id="share" type="button">${icon('share')}<span>Share</span></button>
       <button class="icon-button settings-trigger" id="settings" type="button" popovertarget="settings-panel" aria-controls="settings-panel" aria-expanded="false" aria-label="Settings">${icon('settings')}</button>
     </div>
   </header>
@@ -96,16 +94,21 @@ el('#app').innerHTML = `
       <div class="status-strip" id="status-strip" hidden>
         <p id="status" role="status" aria-live="polite"></p>
       </div>
-      <div class="control-bar flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <button class="tool-button" id="undo" type="button" disabled>${icon('undo')}<span>Undo</span><kbd>Z</kbd></button>
-          <button class="tool-button restart-button" id="retry" type="button" aria-label="Restart route" title="Restart route (R)">${icon('reset')}<span>Restart</span></button>
+      <div class="bottom-actions">
+        <div class="app-actions">
+          <button class="share-button" id="share" type="button">${icon('share')}<span>Share</span></button>
+          <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
         </div>
-        <div class="flex items-center gap-2">
-          <button class="hint-button" id="hint" type="button">${icon('hint')} Hint</button>
+        <div class="control-bar flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <button class="tool-button" id="undo" type="button" disabled>${icon('undo')}<span>Undo</span><kbd>Z</kbd></button>
+            <button class="tool-button restart-button" id="retry" type="button" aria-label="Restart route" title="Restart route (R)">${icon('reset')}<span>Restart</span></button>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="hint-button" id="hint" type="button">${icon('hint')} Hint</button>
+          </div>
         </div>
       </div>
-      <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
       <div class="play-footer"><span>${icon('check')} <span id="offline-state">Saved on this device</span></span>
       </div>
     </section>
@@ -118,6 +121,7 @@ el('#app').innerHTML = `
       <button class="setting-row" id="win-voice" type="button" aria-label="You win voice" aria-pressed="false"><span class="setting-icon">${icon('sound')}</span><span>“You win!” voice</span><span class="setting-value" id="voice-value">Off</span></button>
       <button class="setting-row" id="choose-level" type="button" aria-haspopup="dialog"><span class="setting-icon">${icon('bus')}</span><span>Change level</span>${icon('arrow')}</button>
       <button class="setting-row" id="help" type="button"><span class="setting-icon">${icon('help')}</span><span>How to play</span>${icon('arrow')}</button>
+      <button class="setting-row" id="install-help" type="button" aria-haspopup="dialog"><span class="setting-icon">${icon('download')}</span><span>How to install</span>${icon('arrow')}</button>
       <button class="setting-row" id="update" type="button" hidden><span class="setting-icon">${icon('reset')}</span><span>Update available</span>${icon('arrow')}</button>
       <details class="keyboard-panel" id="keyboard-panel">
         <summary class="setting-row" aria-label="Bus list and keyboard controls"><span class="setting-icon">${icon('bus')}</span><span>Bus list</span>${icon('arrow')}</summary>
@@ -425,6 +429,7 @@ el<HTMLDialogElement>('#dialog').addEventListener('cancel', event => {
   if (modal === 'jammed' || modal === 'won') event.preventDefault(); else modal = null;
 });
 el('#help').addEventListener('click', () => showDialog('help')); el('#retry').addEventListener('click', () => showDialog('retry'));
+el('#install-help').addEventListener('click', () => showDialog('install'));
 el('#share').addEventListener('click', async () => {
   const data = { title: 'Bus Jam', url: publicGameUrl };
   if (navigator.share && (!navigator.canShare || navigator.canShare(data))) {
@@ -460,7 +465,7 @@ window.addEventListener('keydown', event => {
   if (key === 'z') { event.preventDefault(); doUndo(); } if (key === 'h') el<HTMLButtonElement>('#hint').click(); if (key === 'r') showDialog('retry');
 });
 const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), message => say(message), () => el('#settings').focus(), () => {
-  if (modal === 'install-offer' || modal === 'install') closeDialog();
+  if (modal === 'install-offer') closeDialog();
 });
 void installFlow.ready.then(() => { installChecked = true; });
 function showPendingNotice() {
@@ -499,7 +504,7 @@ try {
   if (saved) Object.assign(progress, { completed: saved.completed, best: saved.best, sound: saved.sound, fast: saved.fast, winVoice: saved.winVoice === true });
   game = new Game(state.level, state);
   scene = new DepotScene(el('#scene'), game.state, selectBus, playArea);
-  for (const selector of ['.site-header', '.level-header', '.control-bar', '#install']) scene.resizeObserver.observe(el(selector));
+  for (const selector of ['.site-header', '.level-header', '.control-bar', '.app-actions']) scene.resizeObserver.observe(el(selector));
   await scene.reset(game.state);
   scene.onViewSettled = () => {
     if (transitioning) return;
