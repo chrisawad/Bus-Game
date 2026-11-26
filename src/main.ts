@@ -54,14 +54,13 @@ let graphicsFailed = false;
 let yardKey = '';
 const clearExits = new Map<string, boolean>();
 let boardingInProgress = false, boardingClock = 0, lastPhase = '';
-let modal: 'help' | 'level' | 'retry' | 'won' | 'jammed' | 'install' | 'install-entry' | 'install-offer' | 'update' | 'share' | null = null;
+let modal: 'help' | 'level' | 'retry' | 'won' | 'jammed' | 'install' | 'update' | 'share' | null = null;
 let messageTimer: ReturnType<typeof setTimeout>;
 let audioContext: AudioContext | undefined;
 let audioReady = false;
 let updateAvailable: (() => void) | null = null;
 let updatePrompted = false, installChecked = false, applyingUpdate = false;
 let installPrompted = false;
-try { installPrompted = sessionStorage.getItem('bus-jam-install-dismissed') === '1'; } catch { /* Session-only state is sufficient. */ }
 
 el('#app').innerHTML = `
 <div class="app-shell">
@@ -97,7 +96,7 @@ el('#app').innerHTML = `
       <div class="bottom-actions">
         <div class="app-actions">
           <button class="share-button" id="share" type="button">${icon('share')}<span>Share</span></button>
-          <button class="install-button" id="install" type="button" aria-label="Install Bus Jam">${icon('download')} Install</button>
+          <button class="install-button" id="install" type="button" aria-haspopup="dialog" aria-label="Install Bus Jam">${icon('download')} Install</button>
         </div>
         <div class="control-bar flex items-center justify-between">
           <div class="flex items-center gap-2">
@@ -121,7 +120,6 @@ el('#app').innerHTML = `
       <button class="setting-row" id="win-voice" type="button" aria-label="You win voice" aria-pressed="false"><span class="setting-icon">${icon('sound')}</span><span>“You win!” voice</span><span class="setting-value" id="voice-value">Off</span></button>
       <button class="setting-row" id="choose-level" type="button" aria-haspopup="dialog"><span class="setting-icon">${icon('bus')}</span><span>Change level</span>${icon('arrow')}</button>
       <button class="setting-row" id="help" type="button"><span class="setting-icon">${icon('help')}</span><span>How to play</span>${icon('arrow')}</button>
-      <button class="setting-row" id="install-help" type="button" aria-haspopup="dialog"><span class="setting-icon">${icon('download')}</span><span>How to install</span>${icon('arrow')}</button>
       <button class="setting-row" id="update" type="button" hidden><span class="setting-icon">${icon('reset')}</span><span>Update available</span>${icon('arrow')}</button>
       <details class="keyboard-panel" id="keyboard-panel">
         <summary class="setting-row" aria-label="Bus list and keyboard controls"><span class="setting-icon">${icon('bus')}</span><span>Bus list</span>${icon('arrow')}</summary>
@@ -131,7 +129,7 @@ el('#app').innerHTML = `
     <p class="settings-saved" id="save-state">${icon('check')} Progress saved</p>
   </section>
   <dialog id="dialog" aria-labelledby="dialog-title"><canvas id="win-confetti" aria-hidden="true" hidden></canvas><button class="dialog-close icon-button" id="dialog-close" type="button" aria-label="Close dialog">${icon('close')}</button><div id="dialog-content"></div></dialog>
-  <div class="route-loading" id="route-loading" role="status" aria-live="polite"><div class="route-loading-card"><span class="loading-bus">${icon('bus')}</span><strong id="loading-title">Opening the depot…</strong><span id="loading-detail">Getting your buses and passengers ready.</span><span class="loading-track" aria-hidden="true"></span><button class="dialog-primary" id="loading-reload" type="button" hidden>Reload game ${icon('reset')}</button><button class="dialog-secondary" id="loading-install-help" type="button" hidden>How to install</button></div></div>
+  <div class="route-loading" id="route-loading" role="status" aria-live="polite"><div class="route-loading-card"><span class="loading-bus">${icon('bus')}</span><strong id="loading-title">Opening the depot…</strong><span id="loading-detail">Getting your buses and passengers ready.</span><span class="loading-track" aria-hidden="true"></span><button class="dialog-primary" id="loading-reload" type="button" hidden>Reload game ${icon('reset')}</button><button class="dialog-secondary" id="loading-install-help" type="button" hidden>Install</button></div></div>
 </div>`;
 // Some installed Android browsers report a layout viewport taller than the
 // visible game window. Ignore pinch zoom so it can magnify the existing board.
@@ -165,12 +163,13 @@ function setLoading(active: boolean, title = 'Opening the depot…', detail = 'G
 }
 function showFailure(title: string, detail: string) {
   settings.close();
-  if (modal !== 'install-entry' && modal !== 'install') closeDialog();
+  if (modal !== 'install') closeDialog();
   setLoading(true, title, detail);
   graphicsFailed = true;
   el('#route-loading').setAttribute('role', 'alert'); el('#route-loading').dataset.failed = 'true';
   el('.loading-track').hidden = true; el('#loading-reload').hidden = false; el('#loading-reload').focus();
-  el('#loading-install-help').hidden = false;
+  el('#loading-install-help').hidden = installFlow.isInstalled();
+  showPendingNotice();
 }
 el('#loading-reload').addEventListener('click', () => location.reload());
 setLoading(true);
@@ -351,12 +350,14 @@ async function restart(level = game.state.level, switchLevel = false, yardBefore
   } finally { setLoading(false); }
 }
 function showDialog(kind: NonNullable<typeof modal>) {
-  if (kind === 'install') entryHelpPending = false;
+  if (kind === 'install' && installFlow.isInstalled()) return;
   settings.close();
   const dialog = el<HTMLDialogElement>('#dialog');
   if (dialog.open) closeDialog();
   modal = kind;
-  const content = el('#dialog-content'); el('#dialog-close').hidden = kind === 'jammed' || kind === 'won';
+  const content = el('#dialog-content'); el('#dialog-close').hidden = kind === 'jammed' || kind === 'won' || kind === 'install';
+  if (kind === 'install') dialog.setAttribute('aria-describedby', 'install-description');
+  else dialog.removeAttribute('aria-describedby');
   if (kind === 'level') {
     // Measure the play area before focusing the number field opens a phone keyboard.
     const yard = currentYard(), shellWidth = el('.app-shell').clientWidth;
@@ -389,16 +390,23 @@ function showDialog(kind: NonNullable<typeof modal>) {
     content.innerHTML = '<div class="dialog-emblem warm">' + icon('people') + '</div><div class="eyebrow">A LITTLE TRAFFIC JAM</div><h2 id="dialog-title">Time for a little rewind.</h2>' +
       '<p>All five stops are occupied, and nobody in the middle matches those buses. Undo a dispatch to make room for another color.</p>' +
       '<button class="dialog-primary" data-action="undo">Undo last dispatch ' + icon('undo') + '</button><button class="dialog-secondary" data-action="restart">Try this route again</button>';
-  } else if (kind === 'install' || kind === 'install-entry') {
+  } else if (kind === 'install') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('download') + '</div><h2 id="dialog-title">Install Bus Jam</h2>' +
-      installInstructions() + '<button class="dialog-primary" data-action="install" id="guide-install"' +
-      (installFlow.canPrompt() ? '' : ' hidden') + '>Install Bus Jam ' + icon('download') + '</button>' +
-      '<button class="dialog-secondary" data-action="close">Got it ' + icon('check') + '</button>';
-  } else if (kind === 'install-offer') {
-    content.innerHTML = '<div class="dialog-emblem">' + icon('download') + '</div><h2 id="dialog-title">Take Bus Jam with you</h2>' +
-      '<p>Add Bus Jam to your home screen for full-screen puzzles and offline play.</p>' +
-      '<button class="dialog-primary" data-action="install" autofocus>Install Bus Jam ' + icon('download') + '</button>' +
+      '<p id="install-description">Keep Bus Jam on your home screen and play offline after your first visit.</p>' +
+      '<div id="install-manual">' + installInstructions(installFlow.externalLaunch) +
+      '<details id="install-copy"' + (installFlow.externalLaunch ? ' open' : '') + '><summary>Copy the game link</summary>' +
+      '<input id="install-link" aria-label="Game link" readonly value="' + publicGameUrl + '">' +
+      '<button class="dialog-secondary" id="copy-install-link">Copy link</button><p role="status" id="install-copy-status"></p></details></div>' +
+      '<button class="dialog-primary" data-action="install" id="guide-install">Install app</button><p role="status" id="install-status"></p>' +
       '<button class="dialog-secondary" data-action="close">Not now</button>';
+    const input = el<HTMLInputElement>('#install-link'), status = el('#install-copy-status');
+    input.addEventListener('focus', () => input.select());
+    el('#copy-install-link').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(publicGameUrl); status.textContent = 'Link copied.'; }
+      catch { input.focus(); input.select(); status.textContent = 'Use your device’s Copy command to copy the selected link.'; }
+    });
+    syncInstallDialog();
+    el<HTMLButtonElement>('#guide-install').autofocus = installFlow.canPrompt() && !installFlow.externalLaunch;
   } else if (kind === 'update') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('reset') + '</div><h2 id="dialog-title">A new version is ready</h2>' +
       '<p>Update Bus Jam to get the latest changes. Your progress will be saved before reloading.</p>' +
@@ -415,7 +423,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
   content.querySelectorAll<HTMLButtonElement>('[data-action]').forEach(button => button.addEventListener('click', () => {
     const action = button.dataset.action;
     if (action === 'close') closeDialog(); if (action === 'restart') restart(); if (action === 'next') restart(game.state.level + 1); if (action === 'undo') doUndo();
-    if (action === 'install') { closeDialog(); void installFlow.request(); }
+    if (action === 'install') void installFlow.request();
     if (action === 'update' && !applyingUpdate) {
       if (!persist()) {
         content.querySelector('p')!.textContent = 'Your progress could not be saved. Keep playing, or try saving again before updating.';
@@ -425,6 +433,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
     }
   }));
   dialog.showModal();
+  if (kind === 'install') installPrompted = true;
   if (kind === 'share') el<HTMLInputElement>('#share-link').select();
 }
 function closeDialog() { stopCelebration(); el<HTMLDialogElement>('#dialog').close(); modal = null; }
@@ -434,7 +443,7 @@ el<HTMLDialogElement>('#dialog').addEventListener('cancel', event => {
   if (modal === 'jammed' || modal === 'won') event.preventDefault(); else modal = null;
 });
 el('#help').addEventListener('click', () => showDialog('help')); el('#retry').addEventListener('click', () => showDialog('retry'));
-for (const id of ['#install-help', '#loading-install-help']) el(id).addEventListener('click', () => showDialog('install'));
+el('#loading-install-help').addEventListener('click', () => showDialog('install'));
 el('#share').addEventListener('click', async () => {
   const data = { title: 'Bus Jam', url: publicGameUrl };
   if (navigator.share && (!navigator.canShare || navigator.canShare(data))) {
@@ -469,29 +478,40 @@ window.addEventListener('keydown', event => {
   const key = event.key.toLowerCase();
   if (key === 'z') { event.preventDefault(); doUndo(); } if (key === 'h') el<HTMLButtonElement>('#hint').click(); if (key === 'r') showDialog('retry');
 });
-const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), message => say(message), () => el('#settings').focus(), (installed, canPrompt) => {
-  const nativeButton = document.querySelector<HTMLButtonElement>('#guide-install');
-  if (nativeButton) nativeButton.hidden = !canPrompt;
-  if (installed && (modal === 'install-offer' || modal === 'install-entry')) closeDialog();
+function syncInstallDialog() {
+  const native = installFlow.canPrompt() || installFlow.busy;
+  const button = el<HTMLButtonElement>('#guide-install');
+  el('#install-manual').hidden = native && !installFlow.externalLaunch;
+  button.hidden = !native;
+  button.setAttribute('aria-disabled', String(installFlow.busy));
+  button.textContent = installFlow.busy ? 'Installing…' : 'Install app';
+  el('#install-status').textContent = installFlow.message;
+}
+const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), () => el('#settings').focus(), installed => {
+  el('#loading-install-help').hidden = !graphicsFailed || installed;
+  if (modal !== 'install') return;
+  if (installed) { closeDialog(); (graphicsFailed ? el('#loading-reload') : el('#settings')).focus(); }
+  else syncInstallDialog();
 });
-// Dismissal belongs to this visit. Another app can reuse its browser session
-// (and its display mode) every time the player comes back to the dashboard.
-let entryHelpPending = installFlow.entryHelp;
-void installFlow.ready.then(() => { installChecked = true; showPendingNotice(); });
+let visit = 0;
+function beginVisit() {
+  const current = ++visit;
+  installPrompted = modal === 'install';
+  installChecked = false;
+  void installFlow.checkVisit().then(() => {
+    if (current !== visit) return;
+    installChecked = true;
+    showPendingNotice();
+  });
+}
+beginVisit();
+window.addEventListener('pageshow', event => { if (event.persisted) beginVisit(); });
+document.addEventListener('visibilitychange', showPendingNotice);
 function showPendingNotice() {
-  if (modal || applyingUpdate || settings.isOpen()) return;
-  if (entryHelpPending) {
-    if (!installChecked) return;
-    entryHelpPending = false;
-    if (!installFlow.isInstalled()) { showDialog('install-entry'); return; }
-  }
-  if (!ready || transitioning || game.state.phase !== 'playing') return;
+  if (document.hidden || modal || applyingUpdate || settings.isOpen()) return;
+  if (!graphicsFailed && (!ready || transitioning || game.state.phase !== 'playing')) return;
   if (updateAvailable && !updatePrompted) { updatePrompted = true; showDialog('update'); return; }
-  if (!installFlow.entryHelp && installChecked && !installPrompted && !installFlow.isInstalled()) {
-    installPrompted = true;
-    try { sessionStorage.setItem('bus-jam-install-dismissed', '1'); } catch { /* Keep the offer once per page if storage is unavailable. */ }
-    showDialog('install-offer');
-  }
+  if (installChecked && !installPrompted && !installFlow.isInstalled()) showDialog('install');
 }
 const updateSW = registerSW({
   immediate: true,

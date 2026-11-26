@@ -5,7 +5,7 @@ const key = 'bus-jam-v1';
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
-    sessionStorage.setItem('bus-jam-install-dismissed', '1');
+    Object.defineProperty(navigator, 'standalone', { value: true });
     const set = Map.prototype.set;
     Map.prototype.set = function(k, value) {
       if (value?.group && value?.halo && value?.tag) Reflect.set(window, '__visuals', this);

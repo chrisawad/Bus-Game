@@ -12,25 +12,26 @@ function isAppleMobile() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
-export function setupInstall(button: HTMLButtonElement, help: () => void, status: (message: string) => void, focusAfterInstall: () => void, onChange?: (installed: boolean, canPrompt: boolean) => void) {
+export function setupInstall(button: HTMLButtonElement, openDialog: () => void, focusAfterInstall: () => void, onChange: (installed: boolean) => void) {
   const nav = navigator as InstallNavigator;
   const appMode = matchMedia('(display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay)');
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   const appleMobile = isAppleMobile();
-  const externalLaunch = fragment.get('from') === 'games-dashboard' || window.self !== window.top ||
+  const android = /Android/i.test(nav.userAgent);
+  const externalLaunch = fragment.getAll('from').includes('games-dashboard') || window.self !== window.top ||
     /^https:\/\/(?:games\.chrisawad\.com(?:\/|$)|chrisawad\.github\.io\/Games-Dashboard(?:\/|$))/i.test(document.referrer) ||
+    (android && (/^android-app:\/\/(?!org\.chromium\.webapk\.)/i.test(document.referrer) || /Version\/4\.0.*Chrome\//i.test(nav.userAgent))) ||
     (appleMobile && !nav.standalone && !/Safari\//i.test(nav.userAgent)) ||
-    /;\s*wv\b|\bWebView\b|FBAN\/|FBAV\/|Instagram|MicroMessenger|\bGSA\//i.test(nav.userAgent);
-  // Custom tabs and Safari's in-app browser can present the regular browser UA.
-  const entryHelp = externalLaunch || /Android/i.test(nav.userAgent) || appleMobile;
+    /;\s*wv\b|\bWebView\b|FBAN|FBAV|FB_IAB|Instagram|MicroMessenger|\bLine\/|LinkedInApp|GSA\/|Snapchat|TikTok|BytedanceWebview|Pinterest|Twitter for/i.test(nav.userAgent);
   let prompt: InstallPrompt | undefined, installedHere = false, relatedInstalled = false;
+  let busy = false, message = '';
   const isInstalled = () => installedHere || relatedInstalled || (!externalLaunch && (appMode.matches || nav.standalone === true));
   const canPrompt = () => isSecureContext && !isInstalled() && (typeof nav.install === 'function' || !!prompt);
   const reflect = () => {
     const installed = isInstalled();
     if (installed && document.activeElement === button) focusAfterInstall();
     button.hidden = installed;
-    onChange?.(installed, canPrompt());
+    onChange(installed);
   };
   let lookup = 0;
   const checkRelated = async () => {
@@ -54,11 +55,8 @@ export function setupInstall(button: HTMLButtonElement, help: () => void, status
     ++lookup; installedHere = false; relatedInstalled = false; reflect();
   });
   const request = async () => {
-    if (button.getAttribute('aria-disabled') === 'true') return;
-    // The always-visible game action has a real help flow when prompting is
-    // unavailable. Call supported install APIs directly in this user gesture.
-    if (!isSecureContext || (!nav.install && !prompt)) { help(); return; }
-    button.setAttribute('aria-disabled', 'true');
+    if (busy || !canPrompt()) return;
+    busy = true; message = ''; reflect();
     try {
       if (nav.install) { await nav.install(); installedHere = true; }
       else if (prompt) {
@@ -66,33 +64,37 @@ export function setupInstall(button: HTMLButtonElement, help: () => void, status
         await pending.prompt();
         installedHere = (await pending.userChoice).outcome === 'accepted' || installedHere;
       }
-      if (!installedHere) status('Installation canceled. You can install later.');
-    } catch {
-      status('Installation did not complete. Try again or use your browser’s install menu.');
-    } finally { button.removeAttribute('aria-disabled'); reflect(); }
+      if (!installedHere) message = 'Installation canceled. You can keep playing here.';
+    } catch (error) {
+      message = error instanceof DOMException && error.name === 'AbortError'
+        ? 'Installation canceled. You can keep playing here.'
+        : 'The installer could not open. Try again or use your browser’s install menu.';
+    } finally { busy = false; reflect(); }
   };
-  button.addEventListener('click', request);
+  button.addEventListener('click', () => { if (!isInstalled()) openDialog(); });
   reflect();
-  const checking = checkRelated();
   // Give fast local confirmations priority without depending on a host WebView
   // ever answering. A later positive result still updates the open UI.
-  const ready = entryHelp ? new Promise<void>(resolve => {
+  const checkVisit = () => new Promise<void>(resolve => {
     const timeout = setTimeout(resolve, 750);
-    void checking.then(() => { clearTimeout(timeout); resolve(); });
-  }) : checking;
-  return { ready, entryHelp, isInstalled, canPrompt, request };
+    void checkRelated().then(() => { clearTimeout(timeout); resolve(); });
+  });
+  return { checkVisit, externalLaunch, isInstalled, canPrompt, request, get busy() { return busy; }, get message() { return message; } };
 }
 
-export function installInstructions() {
-  const link = '<a class="install-link" href="' + publicGameUrl + '">buses.chrisawad.com</a>';
-  const secureHelp = isSecureContext ? '' : '<p>For installation and offline play, open the HTTPS game link at ' + link + '.</p>';
-  if (/Android/i.test(navigator.userAgent)) return secureHelp +
-    '<ol class="help-rules install-steps"><li>If Bus Jam opened inside another app, tap its menu (⋮) and choose <strong>Open in Chrome</strong>. If that option is missing, press and hold ' + link + ', copy the link, and paste it into Chrome’s address bar.</li>' +
-    '<li>In Chrome, tap the menu (⋮) and choose <strong>Install and create shortcut</strong>, then <strong>Install</strong>. Some versions show <strong>Install app</strong> or <strong>Add to Home screen</strong> instead.</li></ol>' +
-    '<p class="help-note"><strong>Already installed?</strong> From your Android home screen, swipe up to open the app drawer. Search for <strong>Bus Jam</strong> and tap its icon to play.</p>';
-  if (isAppleMobile()) return secureHelp +
-    '<ol class="help-rules install-steps"><li>If Bus Jam opened inside another app, choose <strong>Open in Safari</strong> from its menu. You can also press and hold ' + link + ', copy the link, and paste it into Safari.</li>' +
-    '<li>In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Turn on <strong>Open as Web App</strong> if offered, then tap <strong>Add</strong>.</li></ol><p>To play again, tap <strong>Bus Jam</strong> on your Home Screen.</p>';
-  if (/Mac/.test(navigator.platform)) return secureHelp + '<p>In Safari, choose <strong>File → Add to Dock</strong>. In Chrome or Edge, look for <strong>Install Bus Jam</strong> in the address bar or browser’s menu.</p><p>To launch it again, search for <strong>Bus Jam</strong> in Spotlight.</p>';
-  return secureHelp + '<p>Open ' + link + ' in Chrome or Edge. Look for the install icon in the address bar or choose <strong>Install Bus Jam</strong> from the browser’s menu.</p><p>To launch it again, search your apps for <strong>Bus Jam</strong>.</p>';
+export function installInstructions(embedded: boolean) {
+  const app = isSecureContext ? 'Bus Jam' : '<a class="install-link" href="' + publicGameUrl + '">Bus Jam</a>';
+  if (isAppleMobile()) {
+    const first = embedded ? 'Use <strong>Open in Safari</strong> in this window’s menu, or copy the game link below and open it in Safari. Tap <strong>Share</strong>.'
+      : 'Open ' + app + ' in Safari and tap <strong>Share</strong>.';
+    return '<ol class="help-rules install-steps"><li>' + first + '</li><li>Choose <strong>Add to Home Screen</strong>. Turn on <strong>Open as Web App</strong> if offered, then tap <strong>Add</strong>.</li></ol>';
+  }
+  if (/Android/i.test(navigator.userAgent)) {
+    const first = embedded ? 'Choose <strong>Open in Chrome</strong> in this window’s menu, or copy the game link below and open it in Chrome.'
+      : 'Open ' + app + ' in Chrome.';
+    return '<ol class="help-rules install-steps"><li>' + first + '</li><li>Tap Chrome’s <strong>⋮ menu</strong>, choose <strong>Install app</strong> or <strong>Add to Home screen</strong>, and follow the prompt.</li></ol>';
+  }
+  if (!isSecureContext) return '<p>To install from this preview, open <a class="install-link" href="' + publicGameUrl + '">Bus Jam over HTTPS</a>.</p>';
+  if (/Macintosh/.test(navigator.userAgent) && /Version\/.*Safari\//.test(navigator.userAgent)) return '<p>In Safari, choose <strong>File → Add to Dock</strong>, then select <strong>Add</strong>.</p>';
+  return '<p>Open Bus Jam in Chrome or Edge and choose the <strong>install option</strong> in the address bar or browser menu.</p>';
 }

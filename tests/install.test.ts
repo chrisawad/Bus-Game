@@ -12,14 +12,15 @@ class Button extends EventTarget {
 function fixture(nav: Record<string, unknown> = {}, installedMode = false) {
   const button = new Button(), win = Object.assign(new EventTarget(), { location: new URL('https://example.test/Bus-Game/') });
   const mode = Object.assign(new EventTarget(), { matches: installedMode });
-  const help = vi.fn(), status = vi.fn(), focus = vi.fn();
+  const help = vi.fn(), focus = vi.fn();
   vi.stubGlobal('window', win);
   vi.stubGlobal('document', { baseURI: 'https://example.test/Bus-Game/', activeElement: button });
   vi.stubGlobal('navigator', { userAgent: 'Chrome', platform: 'Linux', maxTouchPoints: 0, ...nav });
   vi.stubGlobal('matchMedia', () => mode);
   vi.stubGlobal('isSecureContext', true);
-  setupInstall(button as unknown as HTMLButtonElement, help, status, focus);
-  return { button, win, mode, help, status, focus };
+  const flow = setupInstall(button as unknown as HTMLButtonElement, help, focus, () => {});
+  void flow.checkVisit();
+  return { button, win, mode, help, focus, flow };
 }
 function promptEvent(outcome: 'accepted' | 'dismissed') {
   return Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
@@ -36,19 +37,21 @@ describe('persistent install action', () => {
   it('consumes each browser prompt once, keeps cancellation retryable, and hides on acceptance', async () => {
     const f = fixture(), dismissed = promptEvent('dismissed'); f.win.dispatchEvent(dismissed);
     expect(dismissed.defaultPrevented).toBe(true);
-    f.button.click(); f.button.click();
-    await vi.waitFor(() => expect(f.button.getAttribute('aria-disabled')).toBeNull());
+    f.button.click(); expect(dismissed.prompt).not.toHaveBeenCalled();
+    await Promise.all([f.flow.request(), f.flow.request()]);
     expect(dismissed.prompt).toHaveBeenCalledOnce(); expect(f.button.hidden).toBe(false);
-    f.button.click(); expect(f.help).toHaveBeenCalledOnce();
-    const accepted = promptEvent('accepted'); f.win.dispatchEvent(accepted); f.button.click();
+    f.button.click(); expect(f.help).toHaveBeenCalledTimes(2);
+    expect(f.flow.message).toBe('Installation canceled. You can keep playing here.');
+    const accepted = promptEvent('accepted'); f.win.dispatchEvent(accepted); await f.flow.request();
     await vi.waitFor(() => expect(f.button.hidden).toBe(true)); expect(f.focus).toHaveBeenCalledOnce();
   });
   it('prefers the modern install API and recovers from cancellation', async () => {
     const install = vi.fn().mockRejectedValueOnce(new DOMException('Canceled', 'AbortError')).mockResolvedValue(undefined);
     const f = fixture({ install }), event = promptEvent('accepted'); f.win.dispatchEvent(event);
-    f.button.click(); await vi.waitFor(() => expect(f.status).toHaveBeenCalledOnce());
+    f.button.click(); expect(install).not.toHaveBeenCalled();
+    await f.flow.request(); expect(f.flow.message).toBe('Installation canceled. You can keep playing here.');
     expect(f.button.hidden).toBe(false); expect(f.button.getAttribute('aria-disabled')).toBeNull();
-    f.button.click(); await vi.waitFor(() => expect(f.button.hidden).toBe(true));
+    await f.flow.request(); expect(f.button.hidden).toBe(true);
     expect(install).toHaveBeenCalledTimes(2); expect(event.prompt).not.toHaveBeenCalled();
   });
   it('hides for installed display mode, iOS standalone, and installation events', () => {
@@ -77,11 +80,14 @@ describe('persistent install action', () => {
   it('keeps installation help available on insecure local network addresses', () => {
     const install = vi.fn(), f = fixture({ install }); vi.stubGlobal('isSecureContext', false);
     f.button.click(); expect(install).not.toHaveBeenCalled(); expect(f.help).toHaveBeenCalledOnce();
-    expect(installInstructions()).toContain('HTTPS');
+    expect(installInstructions(false)).toContain('HTTPS');
   });
   it('provides maintained Safari instructions for iPhone and touch-enabled iPad', () => {
-    fixture({ userAgent: 'iPhone' }); expect(installInstructions()).toContain('Add to Home Screen');
-    fixture({ platform: 'MacIntel', maxTouchPoints: 5 }); expect(installInstructions()).toContain('Open as Web App');
-    fixture(); expect(installInstructions()).toContain('browser’s menu');
+    fixture({ userAgent: 'iPhone' }); expect(installInstructions(false)).toContain('Add to Home Screen');
+    fixture({ platform: 'MacIntel', maxTouchPoints: 5 }); expect(installInstructions(false)).toContain('Open as Web App');
+    fixture(); expect(installInstructions(false)).toContain('address bar or browser menu.');
+    fixture({userAgent: 'Macintosh Version/19 Safari/605'}); expect(installInstructions(false)).toContain('File → Add to Dock');
+    fixture({userAgent: 'Android'}); expect(installInstructions(false)).toContain('Open Bus Jam in Chrome.');
+    expect(installInstructions(true)).toContain('Open in Chrome');
   });
 });

@@ -13,7 +13,7 @@ test('plays Arrow Cube’s celebration only on a newly finished route', async ({
   const save = { version: 7, active: game.state, completed: [], best: {}, sound: true, fast: true, winVoice: true };
   await page.addInitScript(save => {
     if (!localStorage.getItem('bus-jam-v1')) localStorage.setItem('bus-jam-v1', JSON.stringify(save));
-    sessionStorage.setItem('bus-jam-install-dismissed', '1');
+    Object.defineProperty(navigator, 'standalone', { value: true });
     const log: string[] = []; Reflect.set(window, '__winSounds', log);
     const horn = OscillatorNode.prototype.setPeriodicWave, voice = AudioBufferSourceNode.prototype.start;
     OscillatorNode.prototype.setPeriodicWave = function(wave) { log.push('horn'); horn.call(this, wave); };

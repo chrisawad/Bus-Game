@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   // Repeatable crowds in browser checks; production gets a fresh seed on
   // each new game. Model tests exercise many other shuffle seeds.
   await page.addInitScript(() => {
-    sessionStorage.setItem('bus-jam-install-dismissed', '1');
+    Object.defineProperty(navigator, 'standalone', { value: true });
     let seed = 12345;
     Math.random = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 0x100000000);
   });

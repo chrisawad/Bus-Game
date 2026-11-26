@@ -2,7 +2,14 @@ import { test, expect } from '@playwright/test';
 const key = 'bus-jam-v1';
 const expectedShareUrl = 'https://buses.chrisawad.com/';
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => sessionStorage.setItem('bus-jam-install-dismissed', '1'));
+  // Exercise Settings with the Install action still available after dismissal.
+  await page.addInitScript(() => {
+    const observer = new MutationObserver(() => {
+      const dismiss = document.querySelector<HTMLButtonElement>('dialog[open] #install-description ~ [data-action="close"]');
+      if (dismiss) { observer.disconnect(); dismiss.click(); }
+    });
+    observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['open'] });
+  });
 });
 
 test('Share stays at the lower left, keeps stats centered and sends the public game URL', async ({ page }, info) => {
@@ -192,9 +199,11 @@ test('the game-screen Install action offers help before prompting and hides afte
     window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
   });
   await page.goto('./'); await expect(page.locator('#scene canvas')).toBeVisible();
+  await expect(page.locator('#install-description')).toHaveCount(1);
+  await expect(page.locator('#dialog')).toBeHidden();
   await page.getByRole('button', { name: 'Install Bus Jam', exact: true }).click();
   await expect(page.locator('#dialog-title')).toHaveText('Install Bus Jam');
-  await expect(page.locator('#dialog-content')).toContainText('browser’s menu');
+  await expect(page.locator('#dialog-content')).toContainText('address bar or browser menu.');
   await page.screenshot({ path: 'test-results/' + info.project.name + '-install-help.png' });
   await page.locator('[data-action="close"]').click(); await expect(page.locator('#install')).toBeFocused();
   await page.evaluate(() => window.dispatchEvent(new Event('appinstalled')));
