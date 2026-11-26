@@ -63,7 +63,7 @@ The workflow in `.github/workflows/pages.yml` tests, builds, checks the producti
 
 The workflow reads the Pages base path automatically, supporting both a repository subdirectory and a root user site. For other static hosting, upload `dist/`. Set `BASE_PATH` before building to target a specific subpath; the default is relative URLs.
 
-GitHub Pages serves the installed game under its existing `/Bus-Game/` scope. This workspace does not use ChatGPT Sites. Plain HTTP LAN or Tailscale URLs support play. Use HTTPS for installation and offline support.
+GitHub Pages serves the installed game under its existing `/Bus-Game/` scope and supplies its public URL to the build. For other static hosts, set `PWA_BASE_URL` to the URL that serves the game so Chromium can recognize existing installations. This workspace does not use ChatGPT Sites. Plain HTTP LAN or Tailscale URLs support play. Use HTTPS for installation and offline support.
 
 ## Docker / Nginx
 
@@ -74,7 +74,7 @@ docker run --rm -p 8088:80 bus-jam:local
 docker compose up --build -d
 ```
 
-Open http://localhost:8088. Set BUS_JAM_PORT to choose another Compose host port. The multistage image builds with Node/pnpm and serves the static output from Nginx. `/healthz` supplies a health check. Hashed assets use immutable caching; HTML, the manifest, and service-worker files revalidate. Terminate HTTPS at your reverse proxy for installation/offline support on a remote host.
+Open http://localhost:8088. Set BUS_JAM_PORT to choose another Compose host port. The multistage image builds with Node/pnpm and serves the static output from Nginx. `/healthz` supplies a health check. Hashed assets use immutable caching; HTML, the manifest, and service-worker files revalidate. For a remote host, terminate HTTPS at your reverse proxy and pass its public URL as the `PWA_BASE_URL` build argument.
 
 ## Repository skill
 

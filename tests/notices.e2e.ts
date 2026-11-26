@@ -175,7 +175,7 @@ test('confirmed installations hide every install action on normal and dashboard 
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'standalone', {value:true});
     Object.defineProperty(navigator, 'getInstalledRelatedApps', {value:async () =>
-      location.hash ? [{platform:'webapp', id:new URL('./', document.baseURI).href}] : []});
+      location.hash ? [{platform:'webapp', id:location.origin + '/', url:new URL('manifest.webmanifest', document.baseURI).href}] : []});
   });
   for (const path of ['./','./?next#from=games-dashboard']) {
     await page.goto(new URL(path,info.project.use.baseURL!).href);

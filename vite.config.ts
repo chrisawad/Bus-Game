@@ -17,7 +17,13 @@ export default defineConfig({
         start_url: './',
         scope: './',
         display: 'standalone',
-        related_applications: [{ platform: 'webapp', url: './manifest.webmanifest', id: './' }],
+        // Manifest id "./" has always resolved against the start URL's origin.
+        // The desktop installed-app lookup requires that same ID in absolute form.
+        related_applications: [{
+          platform: 'webapp',
+          url: './manifest.webmanifest',
+          id: new URL('/', process.env.PWA_BASE_URL || 'http://127.0.0.1:4173').href,
+        }],
         orientation: 'any',
         theme_color: '#ecf4ef',
         background_color: '#ecf4ef',

@@ -36,25 +36,39 @@ export function setupInstall(button: HTMLButtonElement, openDialog: () => void, 
     onChange(installed);
   };
   let lookup = 0;
-  const checkRelated = async () => {
+  const loaded = document.readyState === 'complete' ? Promise.resolve() :
+    new Promise<void>(resolve => window.addEventListener('load', () => resolve(), { once: true }));
+  const checkRelated = async (checkForRemoval = false) => {
     const current = ++lookup;
     try {
       if (!isSecureContext || !nav.getInstalledRelatedApps) return;
+      await loaded;
+      if (current !== lookup) return;
       const id = new URL('./', document.baseURI).href;
       const manifest = new URL('manifest.webmanifest', id).href;
       const apps = await nav.getInstalledRelatedApps();
       if (current !== lookup) return;
-      relatedInstalled = apps.some(app => app.platform === 'webapp' && (app.id ? app.id === id : app.url === manifest));
+      relatedInstalled = apps.some(app => {
+        if (app.platform !== 'webapp') return false;
+        // Chrome preserves this game's original origin-root ID. Its manifest
+        // URL distinguishes Bus Jam from other installations on GitHub Pages.
+        if (!app.url) return app.id === id;
+        try { return new URL(app.url, manifest).href === manifest; }
+        catch { return false; }
+      });
+      if (checkForRemoval && !relatedInstalled) installedHere = false;
       reflect();
     } catch { /* Unavailable detection leaves a useful install/help action. */ }
   };
   appMode.addEventListener('change', reflect);
   window.addEventListener('focus', () => { reflect(); void checkRelated(); });
-  window.addEventListener('appinstalled', () => { installedHere = true; prompt = undefined; reflect(); });
+  window.addEventListener('appinstalled', () => { ++lookup; installedHere = true; prompt = undefined; reflect(); });
   window.addEventListener('beforeinstallprompt', event => {
     event.preventDefault(); prompt = event as InstallPrompt; message = '';
-    // Fresh browser eligibility also covers uninstalling during this session.
-    ++lookup; installedHere = false; relatedInstalled = false; reflect();
+    // Chromium can deliver this event while the app is still installed.
+    // Keep an existing confirmation until the browser actually reports removal.
+    if (installedHere || relatedInstalled) void checkRelated(true);
+    reflect();
   });
   const request = async () => {
     if (busy || !canPrompt()) return;
@@ -89,7 +103,7 @@ export function setupInstall(button: HTMLButtonElement, openDialog: () => void, 
   // Give fast local confirmations priority without depending on a host WebView
   // ever answering. A later positive result still updates the open UI.
   const checkVisit = () => new Promise<void>(resolve => {
-    const timeout = setTimeout(resolve, 750);
+    const timeout = setTimeout(resolve, 1500);
     void checkRelated().then(() => { clearTimeout(timeout); resolve(); });
   });
   return { checkVisit, externalLaunch, isInstalled, canPrompt, request, clearMessage() { message = ''; },

@@ -1,6 +1,9 @@
 services:
   bus-jam:
-    build: .
+    build:
+      context: .
+      args:
+        PWA_BASE_URL: ${PWA_BASE_URL:-http://localhost:${BUS_JAM_PORT:-8088}}
     image: bus-jam:local
     ports:
       - "${BUS_JAM_PORT:-8088}:80"

@@ -9,12 +9,12 @@ class Button extends EventTarget {
   removeAttribute(name: string) { this.attributes.delete(name); }
   click() { this.dispatchEvent(new Event('click')); }
 }
-function fixture(nav: Record<string, unknown> = {}, installedMode = false) {
+function fixture(nav: Record<string, unknown> = {}, installedMode = false, readyState = 'complete') {
   const button = new Button(), win = Object.assign(new EventTarget(), { location: new URL('https://example.test/Bus-Game/') });
   const mode = Object.assign(new EventTarget(), { matches: installedMode });
   const help = vi.fn(), focus = vi.fn();
   vi.stubGlobal('window', win);
-  vi.stubGlobal('document', { baseURI: 'https://example.test/Bus-Game/', activeElement: button });
+  vi.stubGlobal('document', { baseURI: 'https://example.test/Bus-Game/', activeElement: button, readyState });
   vi.stubGlobal('navigator', { userAgent: 'Chrome', platform: 'Linux', maxTouchPoints: 0, ...nav });
   vi.stubGlobal('matchMedia', () => mode);
   vi.stubGlobal('isSecureContext', true);
@@ -75,7 +75,7 @@ describe('persistent install action', () => {
     expect(fixture({ standalone: true }).button.hidden).toBe(true);
     const f = fixture(); f.win.dispatchEvent(new Event('appinstalled'));
     expect(f.button.hidden).toBe(true);
-    f.win.dispatchEvent(promptEvent('dismissed')); expect(f.button.hidden).toBe(false);
+    f.win.dispatchEvent(promptEvent('dismissed')); expect(f.button.hidden).toBe(true);
     const g = fixture(); g.mode.matches = true; g.mode.dispatchEvent(new Event('change'));
     expect(g.button.hidden).toBe(true);
   });
@@ -87,6 +87,22 @@ describe('persistent install action', () => {
     f.win.dispatchEvent(new Event('focus')); await vi.waitFor(() => expect(f.button.hidden).toBe(false));
     apps.mockRejectedValue(new Error('not supported')); f.win.dispatchEvent(new Event('focus'));
     await Promise.resolve(); expect(f.button.hidden).toBe(false);
+  });
+  it('waits for load and recognizes Android and desktop records by their game manifest', async () => {
+    const url = 'https://example.test/Bus-Game/manifest.webmanifest';
+    const apps = vi.fn().mockResolvedValue([{ platform: 'webapp', id: './', url }]);
+    const f = fixture({ getInstalledRelatedApps: apps }, false, 'interactive');
+    await Promise.resolve(); expect(apps).not.toHaveBeenCalled();
+    f.win.dispatchEvent(promptEvent('dismissed'));
+    f.win.dispatchEvent(new Event('load'));
+    await vi.waitFor(() => expect(f.button.hidden).toBe(true));
+    apps.mockResolvedValue([{ platform: 'webapp', id: 'https://example.test/', url }]);
+    f.win.dispatchEvent(promptEvent('dismissed'));
+    await vi.waitFor(() => expect(apps).toHaveBeenCalledTimes(2));
+    expect(f.button.hidden).toBe(true);
+    apps.mockResolvedValue([{ platform: 'webapp', id: 'https://example.test/', url: 'https://example.test/Other/manifest.webmanifest' }]);
+    f.win.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() => expect(f.button.hidden).toBe(false));
   });
   it('distinguishes an unmarked iPad web view from the home-screen app', () => {
     const ipad = { platform: 'MacIntel', maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15' };
