@@ -10,7 +10,7 @@ class Button extends EventTarget {
   click() { this.dispatchEvent(new Event('click')); }
 }
 function fixture(nav: Record<string, unknown> = {}, installedMode = false) {
-  const button = new Button(), win = new EventTarget();
+  const button = new Button(), win = Object.assign(new EventTarget(), { location: new URL('https://example.test/Bus-Game/') });
   const mode = Object.assign(new EventTarget(), { matches: installedMode });
   const help = vi.fn(), status = vi.fn(), focus = vi.fn();
   vi.stubGlobal('window', win);
@@ -68,6 +68,11 @@ describe('persistent install action', () => {
     f.win.dispatchEvent(new Event('focus')); await vi.waitFor(() => expect(f.button.hidden).toBe(false));
     apps.mockRejectedValue(new Error('not supported')); f.win.dispatchEvent(new Event('focus'));
     await Promise.resolve(); expect(f.button.hidden).toBe(false);
+  });
+  it('distinguishes an unmarked iPad web view from the home-screen app', () => {
+    const ipad = { platform: 'MacIntel', maxTouchPoints: 5, userAgent: 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15' };
+    expect(fixture({ ...ipad, standalone: false }, true).button.hidden).toBe(false);
+    expect(fixture({ ...ipad, standalone: true }, true).button.hidden).toBe(true);
   });
   it('keeps installation help available on insecure local network addresses', () => {
     const install = vi.fn(), f = fixture({ install }); vi.stubGlobal('isSecureContext', false);

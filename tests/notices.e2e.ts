@@ -45,10 +45,16 @@ test('Android install help works in an in-app browser before and after installed
     for (const installed of [false, true]) {
       if (installed) {
         await page.evaluate(() => sessionStorage.setItem('installed', '1'));
+        await page.goto(new URL('#from=games-dashboard', info.project.use.baseURL!).href);
         await page.reload();
       }
       await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
       await expect(page.locator('#install')).toBeVisible({ visible: !installed });
+      if (!installed) {
+        await expect(dialog).toContainText('Open in Chrome');
+        await dialog.getByRole('button', { name: 'Got it' }).click();
+      }
+      await expect(dialog).toBeHidden();
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('button', { name: 'How to install' }).click();
       await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -61,6 +67,57 @@ test('Android install help works in an in-app browser before and after installed
       await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeFocused();
     }
   } finally { await context.close(); }
+});
+
+test('dashboard entry shows platform instructions with stale dismissal and an inconclusive lookup', async ({ page }, info) => {
+  const apple = info.project.name === 'mobile';
+  await page.addInitScript(apple => {
+    Object.defineProperty(navigator, 'userAgent', { value: apple ? 'Mozilla/5.0 (iPhone) AppleWebKit/605.1.15 Mobile/15E148' : 'Mozilla/5.0 (Linux; Android 15) Chrome/140.0.0.0 Mobile Safari/537.36' });
+    Object.defineProperty(navigator, 'standalone', { value: true });
+    Object.defineProperty(navigator, 'install', { configurable: true, value: undefined });
+    window.addEventListener('beforeinstallprompt', ev => { ev.preventDefault(); ev.stopImmediatePropagation(); }, true);
+    Object.defineProperty(navigator, 'getInstalledRelatedApps', { value: () => apple
+      ? new Promise(resolve => Reflect.set(window, 'finishLookup', resolve))
+      : Promise.reject(new DOMException('Denied', 'NotAllowedError')) });
+    Object.defineProperty(ServiceWorkerContainer.prototype, 'register', { value: () => apple
+      ? new Promise(() => {})
+      : Promise.reject(new DOMException('Updates unavailable', 'SecurityError')) });
+    sessionStorage.setItem('bus-jam-install-dismissed', '1');
+    localStorage.setItem('bus-jam-install-dismissed', '1');
+  }, apple);
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'display-mode', value: 'standalone' }] });
+  const path = './?level=7#from=games-dashboard&route=test';
+  await page.goto(path);
+  const guide = page.getByRole('dialog', { name: 'Install Bus Jam' });
+  await expect(guide).toContainText(apple ? 'Open in Safari' : 'Open in Chrome');
+  await expect(guide).toContainText(apple ? 'Add to Home Screen' : 'Install and create shortcut');
+  await expect(guide.getByRole('link')).toHaveAttribute('href', 'https://buses.chrisawad.com/');
+  await expect(guide.getByRole('button', { name: 'Install Bus Jam' })).toBeHidden();
+  await guide.getByRole('button', { name: 'Got it' }).click();
+  await expect(page.locator('#scene')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#install')).toBeVisible();
+  await page.locator('#settings').click();
+  await page.getByRole('button', { name: 'How to install' }).click();
+  await guide.getByRole('button', { name: 'Got it' }).click();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(guide).toBeHidden();
+  expect(page.url()).toBe(new URL(path, info.project.use.baseURL!).href);
+  await page.reload();
+  await expect(guide).toBeVisible();
+  if (apple) {
+    await page.evaluate(() => Reflect.get(window, 'finishLookup')([{ platform: 'webapp', id: new URL('./', document.baseURI).href }]));
+    await expect(guide).toBeHidden();
+    await expect(page.locator('#install')).toBeHidden();
+  } else {
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'install', { value: async () => sessionStorage.setItem('native-install', 'yes') });
+      window.dispatchEvent(new Event('focus'));
+    });
+    await guide.getByRole('button', { name: 'Install Bus Jam' }).click();
+    expect(await page.evaluate(() => sessionStorage.getItem('native-install'))).toBe('yes');
+    await expect(guide).toBeHidden();
+  }
 });
 
 test('suppresses the install offer when already installed and defers it behind other dialogs', async ({ browser }) => {
