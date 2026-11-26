@@ -54,6 +54,22 @@ describe('persistent install action', () => {
     await f.flow.request(); expect(f.button.hidden).toBe(true);
     expect(install).toHaveBeenCalledTimes(2); expect(event.prompt).not.toHaveBeenCalled();
   });
+  it.each(['NotSupportedError', 'NotAllowedError', 'SecurityError', 'AbortError'])('falls back after an explicit host restriction (%s) and can use a fresh browser prompt', async name => {
+    const install = vi.fn().mockRejectedValue(new DOMException('Installation is not supported in this environment', name));
+    const f = fixture({ install }), stale = promptEvent('accepted');
+    f.win.dispatchEvent(stale);
+    await f.flow.request();
+    expect(f.flow.canPrompt()).toBe(false);
+    f.win.dispatchEvent(new Event('focus'));
+    await f.flow.request();
+    expect(install).toHaveBeenCalledOnce();
+    expect(stale.prompt).not.toHaveBeenCalled();
+    const fresh = promptEvent('accepted');
+    f.win.dispatchEvent(fresh);
+    expect(f.flow.canPrompt()).toBe(true);
+    await f.flow.request();
+    expect(fresh.prompt).toHaveBeenCalledOnce(); expect(f.button.hidden).toBe(true);
+  });
   it('hides for installed display mode, iOS standalone, and installation events', () => {
     expect(fixture({}, true).button.hidden).toBe(true);
     expect(fixture({ standalone: true }).button.hidden).toBe(true);

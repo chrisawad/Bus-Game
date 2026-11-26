@@ -391,6 +391,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
       '<p>All five stops are occupied, and nobody in the middle matches those buses. Undo a dispatch to make room for another color.</p>' +
       '<button class="dialog-primary" data-action="undo">Undo last dispatch ' + icon('undo') + '</button><button class="dialog-secondary" data-action="restart">Try this route again</button>';
   } else if (kind === 'install') {
+    installFlow.clearMessage();
     content.innerHTML = '<div class="dialog-emblem">' + icon('download') + '</div><h2 id="dialog-title">Install Bus Jam</h2>' +
       '<p id="install-description">Keep Bus Jam on your home screen and play offline after your first visit.</p>' +
       '<div id="install-manual">' + installInstructions(installFlow.externalLaunch) +
@@ -406,7 +407,7 @@ function showDialog(kind: NonNullable<typeof modal>) {
       catch { input.focus(); input.select(); status.textContent = 'Use your device’s Copy command to copy the selected link.'; }
     });
     syncInstallDialog();
-    el<HTMLButtonElement>('#guide-install').autofocus = installFlow.canPrompt() && !installFlow.externalLaunch;
+    el<HTMLButtonElement>('#guide-install').autofocus = installFlow.canPrompt();
   } else if (kind === 'update') {
     content.innerHTML = '<div class="dialog-emblem">' + icon('reset') + '</div><h2 id="dialog-title">A new version is ready</h2>' +
       '<p>Update Bus Jam to get the latest changes. Your progress will be saved before reloading.</p>' +
@@ -481,11 +482,14 @@ window.addEventListener('keydown', event => {
 function syncInstallDialog() {
   const native = installFlow.canPrompt() || installFlow.busy;
   const button = el<HTMLButtonElement>('#guide-install');
-  el('#install-manual').hidden = native && !installFlow.externalLaunch;
+  const manual = el('#install-manual'), focused = document.activeElement;
+  manual.hidden = native;
   button.hidden = !native;
   button.setAttribute('aria-disabled', String(installFlow.busy));
   button.textContent = installFlow.busy ? 'Installing…' : 'Install app';
   el('#install-status').textContent = installFlow.message;
+  if (native && manual.contains(focused)) button.focus();
+  if (!native && focused === button) el('#install-copy summary').focus();
 }
 const installFlow = setupInstall(el<HTMLButtonElement>('#install'), () => showDialog('install'), () => el('#settings').focus(), installed => {
   el('#loading-install-help').hidden = !graphicsFailed || installed;

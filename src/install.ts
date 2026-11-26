@@ -25,8 +25,10 @@ export function setupInstall(button: HTMLButtonElement, openDialog: () => void, 
     /;\s*wv\b|\bWebView\b|FBAN|FBAV|FB_IAB|Instagram|MicroMessenger|\bLine\/|LinkedInApp|GSA\/|Snapchat|TikTok|BytedanceWebview|Pinterest|Twitter for/i.test(nav.userAgent);
   let prompt: InstallPrompt | undefined, installedHere = false, relatedInstalled = false;
   let busy = false, message = '';
+  let rejectedInstallApi: InstallNavigator['install'];
+  const installApi = () => typeof nav.install === 'function' && nav.install !== rejectedInstallApi ? nav.install : undefined;
   const isInstalled = () => installedHere || relatedInstalled || (!externalLaunch && (appMode.matches || nav.standalone === true));
-  const canPrompt = () => isSecureContext && !isInstalled() && (typeof nav.install === 'function' || !!prompt);
+  const canPrompt = () => isSecureContext && !isInstalled() && !!(installApi() || prompt);
   const reflect = () => {
     const installed = isInstalled();
     if (installed && document.activeElement === button) focusAfterInstall();
@@ -50,25 +52,36 @@ export function setupInstall(button: HTMLButtonElement, openDialog: () => void, 
   window.addEventListener('focus', () => { reflect(); void checkRelated(); });
   window.addEventListener('appinstalled', () => { installedHere = true; prompt = undefined; reflect(); });
   window.addEventListener('beforeinstallprompt', event => {
-    event.preventDefault(); prompt = event as InstallPrompt;
+    event.preventDefault(); prompt = event as InstallPrompt; message = '';
     // Fresh browser eligibility also covers uninstalling during this session.
     ++lookup; installedHere = false; relatedInstalled = false; reflect();
   });
   const request = async () => {
     if (busy || !canPrompt()) return;
+    const install = installApi(), pending = prompt;
     busy = true; message = ''; reflect();
     try {
-      if (nav.install) { await nav.install(); installedHere = true; }
-      else if (prompt) {
-        const pending = prompt; prompt = undefined;
+      if (install) { await install.call(nav); installedHere = true; }
+      else if (pending) {
+        prompt = undefined;
         await pending.prompt();
         installedHere = (await pending.userChoice).outcome === 'accepted' || installedHere;
       }
       if (!installedHere) message = 'Installation canceled. You can keep playing here.';
     } catch (error) {
-      message = error instanceof DOMException && error.name === 'AbortError'
-        ? 'Installation canceled. You can keep playing here.'
-        : 'The installer could not open. Try again or use your browser’s install menu.';
+      // AbortError also covers unsupported hosts. An explicit restriction in
+      // the browser diagnostic takes precedence over a generic cancellation.
+      const canceled = error instanceof Error && error.name === 'AbortError' &&
+        !/not supported|unsupported|does not support|permissions? policy|not allowed in|disabled by/i.test(error.message);
+      if (canceled) {
+        message = 'Installation canceled. You can keep playing here.';
+      } else {
+        // Some webviews expose an installer that their host will never allow.
+        // A new browser prompt can still make installation available again.
+        if (install) rejectedInstallApi = install;
+        if (prompt === pending) prompt = undefined;
+        message = 'The installer could not open. Try again or use your browser’s install menu.';
+      }
     } finally { busy = false; reflect(); }
   };
   button.addEventListener('click', () => { if (!isInstalled()) openDialog(); });
@@ -79,7 +92,8 @@ export function setupInstall(button: HTMLButtonElement, openDialog: () => void, 
     const timeout = setTimeout(resolve, 750);
     void checkRelated().then(() => { clearTimeout(timeout); resolve(); });
   });
-  return { checkVisit, externalLaunch, isInstalled, canPrompt, request, get busy() { return busy; }, get message() { return message; } };
+  return { checkVisit, externalLaunch, isInstalled, canPrompt, request, clearMessage() { message = ''; },
+    get busy() { return busy; }, get message() { return message; } };
 }
 
 export function installInstructions(embedded: boolean) {

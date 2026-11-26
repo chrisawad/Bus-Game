@@ -94,7 +94,7 @@ test('dashboard entry shows exact platform steps despite stale signals and a den
       Object.defineProperty(navigator, 'install', { value: async () => sessionStorage.setItem('native-install','yes') });
       window.dispatchEvent(new Event('focus'));
     });
-    await expect(dialog.getByRole('listitem').first()).toBeVisible();
+    await expect(dialog.locator('#install-manual')).toBeHidden();
     await dialog.getByRole('button', {name:'Install app', exact:true}).click();
     expect(await page.evaluate(() => sessionStorage.getItem('native-install'))).toBe('yes');
   }
@@ -115,7 +115,60 @@ test('only the dialog’s Install app button invokes native installation', async
   expect(await page.evaluate(() => sessionStorage.getItem('calls'))).toBeNull();
   await dialog.getByRole('button', {name:'Install app'}).click();
   await expect(dialog.getByText('Installation canceled. You can keep playing here.', {exact:true})).toBeVisible();
+  await expect(dialog.getByRole('button', {name:'Install app'})).toBeEnabled();
+  await expect(dialog.locator('summary')).toBeHidden();
   expect(await page.evaluate(() => sessionStorage.getItem('calls'))).toBe('1');
+  await dialog.getByRole('button', {name:'Not now'}).click();
+  await page.locator('#install').click();
+  await expect(dialog.locator('#install-status')).toBeEmpty();
+});
+
+test('Dashboard install switches between compact native controls and the usable manual fallback', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { value: 'Android; wv Chrome/140' });
+    Object.defineProperty(navigator, 'install', { value: () => new Promise((_resolve, reject) => {
+      Reflect.set(window, 'denyInstall', () => reject(new DOMException('Blocked by host', 'SecurityError')));
+    }) });
+    // Control exactly when the browser makes a new single-use prompt available.
+    window.addEventListener('beforeinstallprompt', event => {
+      if (event.isTrusted) { event.preventDefault(); event.stopImmediatePropagation(); }
+    }, true);
+  });
+  await page.goto('./#from=games-dashboard');
+  const dialog = page.getByRole('dialog', { name: 'Install Bus Jam' });
+  const install = dialog.getByRole('button', { name: 'Install app', exact: true });
+  const dismiss = dialog.getByRole('button', { name: 'Not now' });
+  const manual = dialog.locator('#install-manual');
+  await expect(dialog).toHaveAccessibleDescription(description);
+  await expect(install).toBeFocused();
+  await expect(manual).toBeHidden();
+  await dismiss.click(); await page.locator('#install').click();
+  await expect(manual).toBeHidden();
+  await install.click();
+  await expect(dialog.getByRole('button', { name: 'Installing…' })).toBeDisabled();
+  await expect(manual).toBeHidden();
+  await page.evaluate(() => Reflect.get(window, 'denyInstall')());
+  await expect(install).toBeHidden();
+  await expect(dialog.getByRole('listitem').first()).toContainText('Open in Chrome');
+  await expect(dialog.getByRole('textbox', { name: 'Game link' })).toHaveValue(publicUrl);
+  await expect(dialog.getByRole('button', { name: 'Copy link' })).toBeVisible();
+  await dismiss.click(); await page.locator('#install').click();
+  await expect(manual).toBeVisible();
+  await dialog.getByRole('textbox').focus();
+  await page.evaluate(() => {
+    const userChoice = new Promise(resolve => Reflect.set(window, 'finishPrompt', resolve));
+    window.dispatchEvent(Object.assign(new Event('beforeinstallprompt', { cancelable: true }), {
+      prompt: async () => {}, userChoice,
+    }));
+  });
+  await expect(install).toBeFocused(); await expect(manual).toBeHidden();
+  await expect(dialog.locator('#install-status')).toBeEmpty();
+  await install.click(); await expect(manual).toBeHidden();
+  await expect(dialog.getByRole('button', { name: 'Installing…' })).toBeDisabled();
+  await page.evaluate(() => Reflect.get(window, 'finishPrompt')({ outcome: 'dismissed' }));
+  await expect(dialog.locator('#install-status')).toHaveText('Installation canceled. You can keep playing here.');
+  await expect(manual).toBeVisible();
+  await dismiss.click(); await expect(dialog).toBeHidden();
 });
 
 test('confirmed installations hide every install action on normal and dashboard visits', async ({page}, info) => {
